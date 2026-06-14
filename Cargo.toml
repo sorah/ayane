@@ -1,0 +1,90 @@
+[workspace]
+resolver = "3"
+members = [
+    "ayane-protocol",
+    "ayane",
+    "ayane-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Sorah Fukumori <her@sorah.jp>"]
+repository = "https://github.com/sorah/ayane"
+
+[workspace.dependencies]
+ayane-protocol = { path = "ayane-protocol" }
+ayane = { path = "ayane" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = { version = "3", features = ["base64"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
+humantime-serde = "1"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Async runtime / HTTP
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
+async-trait = "0.1"
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+bytes = "1"
+lambda_http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs", "webpki-roots"] }
+url = "2"
+
+# X.509 / crypto (RustCrypto 0.7-generation, aligned with x509-cert 0.2.5)
+x509-cert = { version = "0.2.5", features = ["pem", "builder", "hazmat"] }
+der = { version = "0.7", features = ["alloc", "oid", "pem"] }
+spki = { version = "0.7", features = ["alloc", "pem"] }
+const-oid = { version = "0.9", features = ["db"] }
+pkcs8 = { version = "0.10", features = ["alloc", "pem"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+sha2 = { version = "0.10", features = ["oid"] }
+sha1 = "0.10"
+digest = "0.10"
+hmac = "0.12"
+signature = "2"
+flagset = "0.4"
+pem = "3"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+humantime = "2"
+
+# Local storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# JWT (pure-Rust backend to avoid extra native deps)
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+
+# AWS
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-kms = "1"
+aws-sdk-eventbridge = "1"
+aws-sdk-lambda = "1"
+aws-sdk-dynamodb = "1"
+aws-smithy-types = "1"
+aws-smithy-runtime-api = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Test-only
+aws-smithy-mocks = "0.2"
+
+[profile.release]
+lto = "thin"
+strip = true

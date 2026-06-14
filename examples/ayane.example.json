@@ -1,0 +1,88 @@
+{
+  "ca": {
+    "certificate": { "file": "ca/intermediate.crt" },
+    "key": {
+      "type": "kms",
+      "key_id": "alias/ayane-intermediate",
+      "algorithm": "ECDSA_SHA256",
+      "region": "us-east-1"
+    },
+    "roots": [{ "file": "ca/root.crt" }]
+  },
+
+  "provisioners": [
+    {
+      "name": "ci-issuer",
+      "type": "jwk",
+      "audiences": ["https://ca.example.com/v1/sign"],
+      "template": "server",
+      "key": {
+        "kty": "EC",
+        "crv": "P-256",
+        "alg": "ES256",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+      }
+    }
+  ],
+
+  "default_template": "server",
+  "templates": {
+    "server": {
+      "key_usage": ["digital_signature", "key_encipherment"],
+      "extended_key_usage": ["server_auth"],
+      "default_validity": "24h",
+      "min_validity": "5m",
+      "max_validity": "168h",
+      "backdate": "1m"
+    },
+    "client": {
+      "key_usage": ["digital_signature"],
+      "extended_key_usage": ["client_auth"],
+      "default_validity": "24h",
+      "max_validity": "24h"
+    }
+  },
+
+  "webhooks": [
+    {
+      "name": "policy-gate",
+      "provisioners": ["ci-issuer"],
+      "timeout": "5s",
+      "target": {
+        "type": "http",
+        "url": "https://policy.internal.example.com/ayane",
+        "secret": "c2VjcmV0LWhtYWMta2V5"
+      }
+    },
+    {
+      "name": "enrich-from-lambda",
+      "target": {
+        "type": "lambda",
+        "function_name": "ayane-enrich",
+        "region": "us-east-1"
+      }
+    }
+  ],
+
+  "events": [
+    { "type": "stdout" },
+    {
+      "type": "event_bridge",
+      "event_bus_name": "default",
+      "source": "ayane",
+      "region": "us-east-1"
+    }
+  ],
+
+  "storage": {
+    "type": "dynamodb",
+    "table_name": "ayane-state",
+    "region": "us-east-1"
+  },
+
+  "server": {
+    "listen": "0.0.0.0:9443",
+    "external_url": "https://ca.example.com"
+  }
+}

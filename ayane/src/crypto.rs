@@ -1,0 +1,190 @@
+//! Signature-algorithm modelling and low-level X.509 crypto helpers.
+//!
+//! The CA never holds a private key in this module; signing is delegated to a
+//! [`crate::key_provider::KeyProvider`]. What lives here is the algorithm
+//! taxonomy shared by every signer (its OIDs, hash and DER encodings) plus the
+//! subject-key-identifier computation.
+
+/// Asymmetric signature algorithms ayane can sign certificates with.
+///
+/// Each maps 1:1 to an X.509 `signatureAlgorithm` OID, a digest, and an AWS KMS
+/// `SigningAlgorithmSpec` (the KMS mapping lives in the KMS key provider).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureAlgorithm {
+    /// `ecdsa-with-SHA256` over a P-256 key.
+    EcdsaSha256,
+    /// `ecdsa-with-SHA384` over a P-384 key.
+    EcdsaSha384,
+    /// `sha256WithRSAEncryption` (PKCS#1 v1.5).
+    RsaPkcs1Sha256,
+    /// `sha384WithRSAEncryption` (PKCS#1 v1.5).
+    RsaPkcs1Sha384,
+    /// `sha512WithRSAEncryption` (PKCS#1 v1.5).
+    RsaPkcs1Sha512,
+}
+
+impl SignatureAlgorithm {
+    /// The X.509 `signatureAlgorithm` OID.
+    pub fn oid(self) -> const_oid::ObjectIdentifier {
+        match self {
+            SignatureAlgorithm::EcdsaSha256 => const_oid::db::rfc5912::ECDSA_WITH_SHA_256,
+            SignatureAlgorithm::EcdsaSha384 => const_oid::db::rfc5912::ECDSA_WITH_SHA_384,
+            SignatureAlgorithm::RsaPkcs1Sha256 => {
+                const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION
+            }
+            SignatureAlgorithm::RsaPkcs1Sha384 => {
+                const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION
+            }
+            SignatureAlgorithm::RsaPkcs1Sha512 => {
+                const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION
+            }
+        }
+    }
+
+    /// Whether this is one of the RSA variants.
+    pub fn is_rsa(self) -> bool {
+        matches!(
+            self,
+            SignatureAlgorithm::RsaPkcs1Sha256
+                | SignatureAlgorithm::RsaPkcs1Sha384
+                | SignatureAlgorithm::RsaPkcs1Sha512
+        )
+    }
+
+    /// The DER `AlgorithmIdentifier` for X.509 signature fields.
+    ///
+    /// RSA algorithms carry an explicit `NULL` parameter (RFC 3279/4055); ECDSA
+    /// algorithms omit parameters entirely.
+    pub fn algorithm_identifier(self) -> crate::error::Result<spki::AlgorithmIdentifierOwned> {
+        let parameters = if self.is_rsa() {
+            Some(der::Any::from(der::asn1::Null))
+        } else {
+            None
+        };
+        Ok(spki::AlgorithmIdentifierOwned {
+            oid: self.oid(),
+            parameters,
+        })
+    }
+
+    /// Hash `message` with this algorithm's digest, returning the raw digest.
+    pub fn digest(self, message: &[u8]) -> Vec<u8> {
+        use sha2::Digest;
+        match self {
+            SignatureAlgorithm::EcdsaSha256 | SignatureAlgorithm::RsaPkcs1Sha256 => {
+                sha2::Sha256::digest(message).to_vec()
+            }
+            SignatureAlgorithm::EcdsaSha384 | SignatureAlgorithm::RsaPkcs1Sha384 => {
+                sha2::Sha384::digest(message).to_vec()
+            }
+            SignatureAlgorithm::RsaPkcs1Sha512 => sha2::Sha512::digest(message).to_vec(),
+        }
+    }
+
+    /// Parse from a config string such as `"ECDSA_SHA256"` / `"RSA_PKCS1_SHA256"`.
+    pub fn parse(s: &str) -> crate::error::Result<Self> {
+        match s.to_ascii_uppercase().replace(['-', ' '], "_").as_str() {
+            "ECDSA_SHA256" | "ES256" => Ok(SignatureAlgorithm::EcdsaSha256),
+            "ECDSA_SHA384" | "ES384" => Ok(SignatureAlgorithm::EcdsaSha384),
+            "RSA_PKCS1_SHA256" | "RS256" => Ok(SignatureAlgorithm::RsaPkcs1Sha256),
+            "RSA_PKCS1_SHA384" | "RS384" => Ok(SignatureAlgorithm::RsaPkcs1Sha384),
+            "RSA_PKCS1_SHA512" | "RS512" => Ok(SignatureAlgorithm::RsaPkcs1Sha512),
+            other => Err(crate::error::Error::Config(format!(
+                "unknown signature algorithm: {other}"
+            ))),
+        }
+    }
+}
+
+/// Compute the RFC 5280 method-1 subject key identifier: the 160-bit SHA-1
+/// digest of the `subjectPublicKey` BIT STRING contents.
+pub fn key_identifier(spki: &spki::SubjectPublicKeyInfoOwned) -> Vec<u8> {
+    use sha1::Digest;
+    sha1::Sha1::digest(spki.subject_public_key.raw_bytes()).to_vec()
+}
+
+/// Verify a signature over `tbs` using the public key in `spki_der`, dispatching
+/// on the X.509 `signatureAlgorithm` OID.
+///
+/// Shared by CSR proof-of-possession checks and the "did this CA issue this
+/// certificate?" check performed during renewal. Supports ECDSA P-256/P-384 and
+/// RSA PKCS#1 v1.5 with SHA-256/384/512.
+pub fn verify_signature(
+    spki_der: &[u8],
+    tbs: &[u8],
+    sig: &[u8],
+    alg_oid: const_oid::ObjectIdentifier,
+) -> crate::error::Result<()> {
+    use signature::Verifier;
+    use spki::DecodePublicKey;
+
+    let invalid = |e: &dyn std::fmt::Display| {
+        crate::error::Error::Forbidden(format!("signature verification failed: {e}"))
+    };
+
+    if alg_oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256 {
+        let vk =
+            p256::ecdsa::VerifyingKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
+        let signature = p256::ecdsa::Signature::from_der(sig).map_err(|e| invalid(&e))?;
+        vk.verify(tbs, &signature).map_err(|e| invalid(&e))
+    } else if alg_oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_384 {
+        let vk =
+            p384::ecdsa::VerifyingKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
+        let signature = p384::ecdsa::Signature::from_der(sig).map_err(|e| invalid(&e))?;
+        vk.verify(tbs, &signature).map_err(|e| invalid(&e))
+    } else if alg_oid == const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION {
+        verify_rsa::<sha2::Sha256>(spki_der, tbs, sig)
+    } else if alg_oid == const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION {
+        verify_rsa::<sha2::Sha384>(spki_der, tbs, sig)
+    } else if alg_oid == const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION {
+        verify_rsa::<sha2::Sha512>(spki_der, tbs, sig)
+    } else {
+        Err(crate::error::Error::BadRequest(format!(
+            "unsupported signature algorithm: {alg_oid}"
+        )))
+    }
+}
+
+fn verify_rsa<D>(spki_der: &[u8], tbs: &[u8], sig: &[u8]) -> crate::error::Result<()>
+where
+    D: digest::Digest + const_oid::AssociatedOid,
+{
+    use signature::Verifier;
+    use spki::DecodePublicKey;
+
+    let invalid = |e: &dyn std::fmt::Display| {
+        crate::error::Error::Forbidden(format!("signature verification failed: {e}"))
+    };
+    let pubkey = rsa::RsaPublicKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
+    let vk = rsa::pkcs1v15::VerifyingKey::<D>::new(pubkey);
+    let signature = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| invalid(&e))?;
+    vk.verify(tbs, &signature).map_err(|e| invalid(&e))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn algorithm_identifier_rsa_has_null_params() {
+        let ai = super::SignatureAlgorithm::RsaPkcs1Sha256
+            .algorithm_identifier()
+            .unwrap();
+        assert!(ai.parameters.is_some());
+    }
+
+    #[test]
+    fn algorithm_identifier_ecdsa_omits_params() {
+        let ai = super::SignatureAlgorithm::EcdsaSha256
+            .algorithm_identifier()
+            .unwrap();
+        assert!(ai.parameters.is_none());
+    }
+
+    #[test]
+    fn parse_roundtrip() {
+        assert_eq!(
+            super::SignatureAlgorithm::parse("ecdsa-sha256").unwrap(),
+            super::SignatureAlgorithm::EcdsaSha256
+        );
+        assert!(super::SignatureAlgorithm::parse("bogus").is_err());
+    }
+}
