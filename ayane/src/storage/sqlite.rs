@@ -179,29 +179,6 @@ impl crate::storage::Storage for SqliteStorage {
         .await
     }
 
-    async fn list_certificates(
-        &self,
-    ) -> crate::error::Result<Vec<crate::storage::CertificateRecord>> {
-        self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare(&format!("{SELECT_CERTIFICATE} ORDER BY issued_at"))
-                .map_err(|e| {
-                    crate::error::Error::Internal(format!("sqlite list_certificates: {e}"))
-                })?;
-            let rows = stmt.query_map([], row_to_certificate).map_err(|e| {
-                crate::error::Error::Internal(format!("sqlite list_certificates: {e}"))
-            })?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row.map_err(|e| {
-                    crate::error::Error::Internal(format!("sqlite list_certificates: {e}"))
-                })?);
-            }
-            Ok(out)
-        })
-        .await
-    }
-
     async fn revoke(&self, record: crate::storage::RevocationRecord) -> crate::error::Result<()> {
         self.with_conn(move |conn| {
             // Idempotent: keep the original record if the serial is already revoked.
@@ -344,19 +321,6 @@ mod tests {
             storage.get_certificate("123").await.unwrap(),
             Some(certificate("123"))
         );
-    }
-
-    #[tokio::test]
-    async fn list_certificates_returns_all() {
-        use crate::storage::Storage;
-        let storage = super::SqliteStorage::open_in_memory().unwrap();
-        storage.record_certificate(certificate("10")).await.unwrap();
-        storage.record_certificate(certificate("2")).await.unwrap();
-        let all = storage.list_certificates().await.unwrap();
-        let serials: Vec<&str> = all.iter().map(|r| r.serial_number.as_str()).collect();
-        assert_eq!(serials.len(), 2);
-        assert!(serials.contains(&"10"));
-        assert!(serials.contains(&"2"));
     }
 
     #[tokio::test]

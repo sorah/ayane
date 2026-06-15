@@ -5,7 +5,12 @@
 //! extension, so issuance policy is enforced over one canonical representation.
 
 /// A single Subject Alternative Name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// In webhook payloads this serializes as an adjacently tagged enum
+/// (`{"type": "dns", "value": "example.com"}`), so the SAN kind is explicit
+/// rather than re-derived from the string by [`San::parse`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum San {
     /// `dNSName`.
     Dns(String),
@@ -33,10 +38,14 @@ impl San {
         }
         San::Dns(s.to_string())
     }
+}
+
+impl TryFrom<&San> for x509_cert::ext::pkix::name::GeneralName {
+    type Error = crate::error::Error;
 
     /// Encode into an X.509 `GeneralName`.
-    pub fn to_general_name(&self) -> crate::error::Result<x509_cert::ext::pkix::name::GeneralName> {
-        let gn = match self {
+    fn try_from(san: &San) -> crate::error::Result<Self> {
+        let gn = match san {
             San::Dns(d) => x509_cert::ext::pkix::name::GeneralName::DnsName(
                 der::asn1::Ia5String::new(d).map_err(|e| {
                     crate::error::Error::BadRequest(format!("invalid DNS SAN {d:?}: {e}"))
@@ -64,35 +73,39 @@ impl San {
         };
         Ok(gn)
     }
+}
 
-    /// Decode from an X.509 `GeneralName`, returning `None` for variants ayane
-    /// does not model (directory name, otherName, ...).
-    pub fn from_general_name(gn: &x509_cert::ext::pkix::name::GeneralName) -> Option<San> {
+impl TryFrom<&x509_cert::ext::pkix::name::GeneralName> for San {
+    type Error = ();
+
+    /// Decode from an X.509 `GeneralName`, failing for variants ayane does not
+    /// model (directory name, otherName, ...).
+    fn try_from(gn: &x509_cert::ext::pkix::name::GeneralName) -> Result<San, ()> {
         match gn {
             x509_cert::ext::pkix::name::GeneralName::DnsName(d) => {
-                Some(San::Dns(d.as_str().to_string()))
+                Ok(San::Dns(d.as_str().to_string()))
             }
             x509_cert::ext::pkix::name::GeneralName::Rfc822Name(m) => {
-                Some(San::Email(m.as_str().to_string()))
+                Ok(San::Email(m.as_str().to_string()))
             }
             x509_cert::ext::pkix::name::GeneralName::UniformResourceIdentifier(u) => {
-                Some(San::Uri(u.as_str().to_string()))
+                Ok(San::Uri(u.as_str().to_string()))
             }
             x509_cert::ext::pkix::name::GeneralName::IpAddress(bytes) => {
                 let b = bytes.as_bytes();
                 match b.len() {
                     4 => {
-                        let arr: [u8; 4] = b.try_into().ok()?;
-                        Some(San::Ip(std::net::IpAddr::from(arr)))
+                        let arr: [u8; 4] = b.try_into().map_err(|_| ())?;
+                        Ok(San::Ip(std::net::IpAddr::from(arr)))
                     }
                     16 => {
-                        let arr: [u8; 16] = b.try_into().ok()?;
-                        Some(San::Ip(std::net::IpAddr::from(arr)))
+                        let arr: [u8; 16] = b.try_into().map_err(|_| ())?;
+                        Ok(San::Ip(std::net::IpAddr::from(arr)))
                     }
-                    _ => None,
+                    _ => Err(()),
                 }
             }
-            _ => None,
+            _ => Err(()),
         }
     }
 }
@@ -125,8 +138,8 @@ mod tests {
     fn general_name_roundtrip() {
         for s in ["example.com", "10.0.0.1", "::1", "a@b.com", "https://x/y"] {
             let san = San::parse(s);
-            let gn = san.to_general_name().unwrap();
-            assert_eq!(San::from_general_name(&gn), Some(san));
+            let gn = x509_cert::ext::pkix::name::GeneralName::try_from(&san).unwrap();
+            assert_eq!(San::try_from(&gn), Ok(san));
         }
     }
 }

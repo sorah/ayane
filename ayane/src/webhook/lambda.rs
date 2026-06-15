@@ -94,7 +94,7 @@ mod tests {
             operation: crate::webhook::Operation::Sign,
             provisioner: None,
             subject: "example.com".to_string(),
-            sans: vec!["example.com".to_string()],
+            sans: vec![crate::san::San::parse("example.com")],
             csr_der: None,
             previous_certificate_der: None,
             not_before: "2026-06-14T00:00:00Z".parse().unwrap(),

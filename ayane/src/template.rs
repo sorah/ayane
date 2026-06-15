@@ -291,7 +291,7 @@ pub(crate) fn subject_alt_name_extension(
     }
     let gns = sans
         .iter()
-        .map(|s| s.to_general_name())
+        .map(x509_cert::ext::pkix::name::GeneralName::try_from)
         .collect::<crate::error::Result<Vec<_>>>()?;
     Ok(Some(crate::x509::extension(
         &x509_cert::ext::pkix::SubjectAltName(gns),

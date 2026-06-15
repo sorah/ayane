@@ -36,8 +36,10 @@ pub struct Config {
 impl Config {
     /// Parse a configuration document from JSON text.
     pub fn from_json(text: &str) -> crate::error::Result<Self> {
-        serde_json::from_str(text)
-            .map_err(|e| crate::error::Error::Config(format!("invalid configuration: {e}")))
+        let config: Self = serde_json::from_str(text)
+            .map_err(|e| crate::error::Error::Config(format!("invalid configuration: {e}")))?;
+        config.server.tls.validate()?;
+        Ok(config)
     }
 
     /// Load a configuration document from a file path.
@@ -257,6 +259,10 @@ pub struct ServerConfig {
     /// Public base URL, used to validate token audiences and DPoP `htu`.
     #[serde(default)]
     pub external_url: Option<String>,
+    /// Self-issued serving TLS for the standalone runtime. Enabled by default;
+    /// ignored under AWS Lambda (TLS is terminated by the Function URL).
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 impl Default for ServerConfig {
@@ -264,12 +270,101 @@ impl Default for ServerConfig {
         ServerConfig {
             listen: default_listen(),
             external_url: None,
+            tls: TlsConfig::default(),
         }
     }
 }
 
 fn default_listen() -> String {
     "0.0.0.0:9443".to_string()
+}
+
+/// Self-issued serving TLS settings.
+///
+/// When [`enabled`](Self::enabled) (the default), the standalone server mints a
+/// leaf certificate from the configured CA, serves HTTPS with it, and renews it
+/// in the background. The SAN set is resolved from [`dns_names`](Self::dns_names)
+/// / [`ip_addresses`](Self::ip_addresses), else from `server.external_url`, else
+/// a loopback fallback — see `crate::tls::resolve_sans`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Serve HTTPS. When `false`, the standalone server serves plaintext HTTP
+    /// (for deployments terminating TLS at a fronting proxy).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Explicit DNS SANs for the serving certificate.
+    #[serde(default)]
+    pub dns_names: Vec<String>,
+    /// Explicit IP SANs for the serving certificate.
+    #[serde(default)]
+    pub ip_addresses: Vec<String>,
+    /// Lifetime of each self-issued serving certificate.
+    #[serde(default = "default_tls_validity")]
+    pub validity: crate::duration::ConfigDuration,
+    /// Re-issue this long before expiry. Defaults to one third of `validity`
+    /// (so renewal happens at ~2/3 of the lifetime).
+    #[serde(default)]
+    pub renew_before: Option<crate::duration::ConfigDuration>,
+    /// Maximum random amount subtracted from the renewal instant, to de-sync a
+    /// fleet. Defaults to one twentieth of `validity`.
+    #[serde(default)]
+    pub renew_jitter: Option<crate::duration::ConfigDuration>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        TlsConfig {
+            enabled: true,
+            dns_names: Vec::new(),
+            ip_addresses: Vec::new(),
+            validity: default_tls_validity(),
+            renew_before: None,
+            renew_jitter: None,
+        }
+    }
+}
+
+impl TlsConfig {
+    /// The effective `renew_before`, defaulting to one third of `validity`.
+    pub fn renew_before(&self) -> std::time::Duration {
+        self.renew_before
+            .map(crate::duration::ConfigDuration::get)
+            .unwrap_or(self.validity.get() / 3)
+    }
+
+    /// The effective `renew_jitter`, defaulting to one twentieth of `validity`.
+    pub fn renew_jitter(&self) -> std::time::Duration {
+        self.renew_jitter
+            .map(crate::duration::ConfigDuration::get)
+            .unwrap_or(self.validity.get() / 20)
+    }
+
+    /// Reject configs that cannot be served, regardless of runtime. SAN
+    /// resolution always yields a non-empty set, so there is no empty-SAN error.
+    fn validate(&self) -> crate::error::Result<()> {
+        for ip in &self.ip_addresses {
+            ip.parse::<std::net::IpAddr>().map_err(|e| {
+                crate::error::Error::Config(format!(
+                    "server.tls.ip_addresses: invalid IP {ip:?}: {e}"
+                ))
+            })?;
+        }
+        if self.renew_before() >= self.validity.get() {
+            return Err(crate::error::Error::Config(
+                "server.tls.renew_before must be shorter than validity".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_tls_validity() -> crate::duration::ConfigDuration {
+    crate::duration::ConfigDuration(std::time::Duration::from_secs(24 * 3600))
 }
 
 #[cfg(test)]

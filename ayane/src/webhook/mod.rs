@@ -51,8 +51,8 @@ pub struct WebhookRequest {
     pub provisioner: Option<String>,
     /// Requested subject common name.
     pub subject: String,
-    /// Requested Subject Alternative Names (as strings).
-    pub sans: Vec<String>,
+    /// Requested Subject Alternative Names, each tagged with its kind.
+    pub sans: Vec<crate::san::San>,
     /// DER of the request CSR (present for `sign` and `rekey`), base64-encoded.
     #[serde_as(
         as = "Option<serde_with::base64::Base64<serde_with::base64::Standard, serde_with::formats::Padded>>"
@@ -123,9 +123,9 @@ pub struct WebhookResponse {
     /// Override the subject common name.
     pub subject_common_name: Option<String>,
     /// Replace the SAN set entirely.
-    pub sans: Option<Vec<String>>,
+    pub sans: Option<Vec<crate::san::San>>,
     /// Add SANs to the (possibly replaced) set.
-    pub additional_sans: Vec<String>,
+    pub additional_sans: Vec<crate::san::San>,
     /// Override notBefore.
     pub not_before: Option<chrono::DateTime<chrono::Utc>>,
     /// Override notAfter.
@@ -250,7 +250,7 @@ pub async fn run(
         operation: ctx.operation,
         provisioner: ctx.provisioner.map(str::to_string),
         subject: ctx.subject.to_string(),
-        sans: ctx.sans.iter().map(ToString::to_string).collect(),
+        sans: ctx.sans.clone(),
         csr_der: ctx.csr_der.map(<[u8]>::to_vec),
         previous_certificate_der: ctx.previous_certificate_der.map(<[u8]>::to_vec),
         not_before: chrono::DateTime::<chrono::Utc>::from(ctx.not_before),
@@ -282,12 +282,11 @@ fn apply_response(
         customization.subject_common_name = Some(cn.clone());
     }
     if let Some(sans) = &response.sans {
-        customization.sans = sans.iter().map(|s| crate::san::San::parse(s)).collect();
+        customization.sans = sans.clone();
     }
-    for s in &response.additional_sans {
-        let san = crate::san::San::parse(s);
-        if !customization.sans.contains(&san) {
-            customization.sans.push(san);
+    for san in &response.additional_sans {
+        if !customization.sans.contains(san) {
+            customization.sans.push(san.clone());
         }
     }
     if let Some(nb) = response.not_before {
@@ -332,8 +331,8 @@ mod tests {
     fn apply_response_replaces_and_adds_sans() {
         let mut c = base_customization();
         let resp = super::WebhookResponse {
-            sans: Some(vec!["a.example".to_string()]),
-            additional_sans: vec!["b.example".to_string(), "a.example".to_string()],
+            sans: Some(vec![san("a.example")]),
+            additional_sans: vec![san("b.example"), san("a.example")],
             ..Default::default()
         };
         super::apply_response(&mut c, &resp).unwrap();
@@ -375,13 +374,13 @@ mod tests {
     fn response_deserializes_snake_case() {
         let json = r#"{
             "allow": true,
-            "additional_sans": ["x.example"],
+            "additional_sans": [{"type": "dns", "value": "x.example"}],
             "subject_common_name": "cn.example",
             "not_after": "2030-01-01T00:00:00Z"
         }"#;
         let resp: super::WebhookResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.allow, Some(true));
-        assert_eq!(resp.additional_sans, vec!["x.example".to_string()]);
+        assert_eq!(resp.additional_sans, vec![san("x.example")]);
         assert_eq!(resp.subject_common_name.as_deref(), Some("cn.example"));
         assert!(resp.not_after.is_some());
     }
@@ -393,7 +392,7 @@ mod tests {
             operation: super::Operation::Sign,
             provisioner: Some("acme".to_string()),
             subject: "example.com".to_string(),
-            sans: vec!["example.com".to_string()],
+            sans: vec![san("example.com")],
             csr_der: Some(vec![1, 2, 3, 4]),
             previous_certificate_der: None,
             not_before: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH),

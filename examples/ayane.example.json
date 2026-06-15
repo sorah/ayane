@@ -83,6 +83,11 @@
 
   "server": {
     "listen": "0.0.0.0:9443",
-    "external_url": "https://ca.example.com"
+    "external_url": "https://ca.example.com",
+    "tls": {
+      "enabled": true,
+      "dns_names": ["ca.example.com"],
+      "validity": "24h"
+    }
   }
 }

@@ -25,6 +25,7 @@ async fn run() -> ayane::error::Result<()> {
     let config = ayane::config::Config::from_path(std::path::Path::new(&config_path))?;
     let listen = config.server.listen.clone();
     let external_url = config.server.external_url.clone();
+    let tls = config.server.tls.clone();
 
     if external_url.is_none() {
         tracing::warn!(
@@ -40,5 +41,5 @@ async fn run() -> ayane::error::Result<()> {
         external_url,
     };
 
-    ayane::server::run(state, &listen).await
+    ayane::server::run(state, &listen, &tls).await
 }

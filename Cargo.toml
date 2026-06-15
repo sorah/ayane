@@ -21,6 +21,7 @@ ayane = { path = "ayane" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = { version = "3", features = ["base64"] }
+serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
 humantime-serde = "1"
 
@@ -38,6 +39,11 @@ bytes = "1"
 lambda_http = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs", "webpki-roots"] }
 url = "2"
+# Serving TLS (self-issued). aws-lc-rs provider, explicitly selected so it
+# coexists with whatever provider reqwest links. rustls takes raw DER and shares
+# no types with the der 0.7 / x509-cert tree, so the pin is unaffected.
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 
 # X.509 / crypto (RustCrypto 0.7-generation, aligned with x509-cert 0.2.5)
 x509-cert = { version = "0.2.5", features = ["pem", "builder", "hazmat"] }

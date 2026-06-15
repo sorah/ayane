@@ -41,23 +41,39 @@ In Lambda mode the server also sets `AWS_LAMBDA_HTTP_IGNORE_STAGE_IN_PATH=true` 
 
 ## Standalone deployment
 
-In standalone mode the server binds a plain TCP listener and speaks HTTP. There is no built-in TLS: terminate TLS at a reverse proxy (nginx, Caddy, an ALB, Envoy, etc.) in front of ayane.
+In standalone mode the server binds a TCP listener on `server.listen`. By default it serves **HTTPS with a certificate it self-issues from its own CA** (see [Self-issued serving TLS](#self-issued-serving-tls) below). To instead terminate TLS at a reverse proxy (nginx, Caddy, an ALB, Envoy, etc.), disable serving TLS with `server.tls.enabled = false` and the listener speaks plaintext HTTP.
 
 ### `server` configuration
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `server.listen` | `"0.0.0.0:9443"` | Listen address for the standalone HTTP server. |
-| `server.external_url` | unset | Public base URL of the CA. Used to validate token `aud` and DPoP `htu`. |
+| `server.listen` | `"0.0.0.0:9443"` | Listen address for the standalone server. |
+| `server.external_url` | unset | Public base URL of the CA. Used to validate token `aud` and DPoP `htu`, and to derive the serving certificate's SAN. |
+| `server.tls` | enabled | Self-issued serving TLS. See [below](#self-issued-serving-tls) and the [configuration reference](configuration.md#tlsconfig). |
 
 ```json
 {
   "server": {
     "listen": "0.0.0.0:9443",
-    "external_url": "https://ca.example.com"
+    "external_url": "https://ca.example.com",
+    "tls": { "enabled": true, "dns_names": ["ca.example.com"] }
   }
 }
 ```
+
+### Self-issued serving TLS
+
+Because `ayane-server` is itself a CA, the standalone server can serve its own HTTPS without an external certificate: it mints a short-lived leaf from the configured CA, serves it, and renews it in the background before expiry (the same self-served-TLS pattern as step-ca). The serving leaf chains to the same root clients fetch from `GET /v1/roots`, so a client that already trusts the CA root trusts the API endpoint with no extra configuration. The serving private key is ephemeral and in-memory only.
+
+This is **on by default**. The serving SANs are resolved from `server.tls.dns_names`/`ip_addresses`, else from the host of `server.external_url`, else a loopback fallback (`localhost`, `127.0.0.1`, `::1`) — ayane never infers the OS hostname. Set `external_url` or explicit SANs for any non-local deployment, otherwise the default loopback certificate will not match a public hostname. Full schema and renewal knobs (`validity`, `renew_before`, `renew_jitter`) are in the [configuration reference](configuration.md#tlsconfig).
+
+To put ayane behind a TLS-terminating reverse proxy instead, set:
+
+```json
+{ "server": { "tls": { "enabled": false } } }
+```
+
+The listener then speaks plaintext HTTP and the proxy handles TLS, as in earlier versions. Note that this changes the previous default: a standalone deployment that relied on plaintext HTTP must now set `tls.enabled = false` explicitly.
 
 ### Why `external_url` matters
 
@@ -100,7 +116,7 @@ WantedBy=multi-user.target
 
 ## AWS Lambda deployment
 
-When `AWS_LAMBDA_RUNTIME_API` is present, `ayane-server` runs under the `lambda_http` runtime and handles Lambda Function URL events. TLS is terminated by the Function URL itself, so no reverse proxy is required and `server.listen` is ignored.
+When `AWS_LAMBDA_RUNTIME_API` is present, `ayane-server` runs under the `lambda_http` runtime and handles Lambda Function URL events. TLS is terminated by the Function URL itself, so no reverse proxy is required and `server.listen` is ignored. `server.tls` is also ignored under Lambda (the process never sees the handshake) — it is a silent no-op there, not an error, so the same config can be shared between standalone and Lambda deployments.
 
 Set `server.external_url` to the Function URL's public base (for example `https://abc123.lambda-url.us-east-1.on.aws` or a custom domain in front of it) so token audiences and DPoP `htu` are validated against a fixed, trusted URL.
 

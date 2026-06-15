@@ -81,7 +81,7 @@ impl ParsedCsr {
                             crate::error::Error::BadRequest(format!("invalid SubjectAltName: {e}"))
                         })?;
                     for gn in san_ext.0.iter() {
-                        if let Some(san) = crate::san::San::from_general_name(gn) {
+                        if let Ok(san) = crate::san::San::try_from(gn) {
                             sans.push(san);
                         }
                     }

@@ -1,22 +1,24 @@
 //! AWS DynamoDB [`Storage`](crate::storage::Storage) implementation.
 //!
 //! A single table holds all three concerns under a composite primary key — a
-//! string partition key `pk` and a string sort key `sk` (a type marker):
+//! string partition key `pk` and a string sort key `sk`:
 //!
-//! - issued certificates: `pk = "certificate:{serial}"`, `sk = "certificate"`,
+//! - issued certificates: `pk = "certificate:{serial}"`, `sk = "cn:{common_name}"`,
 //!   carrying the full leaf PEM and its metadata (no TTL — a permanent
-//!   inventory).
+//!   inventory). The CN-bearing `sk` groups every serial issued for a common
+//!   name under one partition of the inverted index. Because `sk` is no longer a
+//!   fixed value, a by-serial lookup queries the base table on `pk` (unique per
+//!   serial) rather than issuing a `GetItem`, which would require the full key.
 //! - revocations: `pk = "revocation:{serial}"`, `sk = "revocation"`
 //! - one-time token ids: `pk = "token:{jti}"`, `sk = "token"`, plus a numeric
 //!   `ttl` attribute (epoch seconds) so DynamoDB's TTL feature reaps expired
 //!   claims. The `ttl` is set a [`TTL_BUFFER`] beyond the claim's real expiry so
 //!   DynamoDB's lazy deletion never removes a still-relevant denylist entry.
 //!
-//! Listing (e.g. to assemble a CRL, or enumerate issued certificates) is served
-//! by an inverted global secondary index [`INVERTED_INDEX`] whose partition key
-//! is the table's `sk` and sort key is the table's `pk`; querying it on
-//! `sk = "revocation"` returns every revocation, and `sk = "certificate"` every
-//! issued certificate.
+//! Listing revocations (e.g. to assemble a CRL) is served by an inverted global
+//! secondary index [`INVERTED_INDEX`] whose partition key is the table's `sk`
+//! and sort key is the table's `pk`; querying it on `sk = "revocation"` returns
+//! every revocation.
 //!
 //! `record_certificate`, `revoke` and `claim_token` rely on a conditional put
 //! (`attribute_not_exists(pk)`) for atomic first-writer-wins semantics: revoke
@@ -28,8 +30,8 @@
 /// reject as a replay.
 const TTL_BUFFER: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// Sort-key / inverted-index partition value for issued-certificate items.
-const CERTIFICATE_TYPE: &str = "certificate";
+/// Sort-key prefix for issued-certificate items, carrying the common name.
+const CERTIFICATE_SK_PREFIX: &str = "cn:";
 /// Sort-key / inverted-index partition value for revocation items.
 const REVOCATION_TYPE: &str = "revocation";
 /// Sort-key value for one-time token items.
@@ -65,6 +67,12 @@ impl DynamoDbStorage {
         format!("certificate:{serial_number}")
     }
 
+    /// Sort key grouping every serial issued for a common name under one
+    /// inverted-index partition.
+    fn certificate_sk(common_name: &str) -> String {
+        format!("{CERTIFICATE_SK_PREFIX}{common_name}")
+    }
+
     fn revocation_pk(serial_number: &str) -> String {
         format!("revocation:{serial_number}")
     }
@@ -84,43 +92,19 @@ impl crate::storage::Storage for DynamoDbStorage {
         &self,
         record: crate::storage::CertificateRecord,
     ) -> crate::error::Result<()> {
-        let mut item = std::collections::HashMap::new();
+        let serial_number = record.serial_number.clone();
+        let sk = DynamoDbStorage::certificate_sk(&record.subject);
+        let mut item: std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue> =
+            serde_dynamo::aws_sdk_dynamodb_1::to_item(&record).map_err(|e| {
+                crate::error::Error::Internal(format!(
+                    "dynamodb serialize certificate {serial_number}: {e}"
+                ))
+            })?;
         item.insert(
             "pk".to_string(),
-            DynamoDbStorage::s(DynamoDbStorage::certificate_pk(&record.serial_number)),
+            DynamoDbStorage::s(DynamoDbStorage::certificate_pk(&serial_number)),
         );
-        item.insert("sk".to_string(), DynamoDbStorage::s(CERTIFICATE_TYPE));
-        item.insert(
-            "serial_number".to_string(),
-            DynamoDbStorage::s(record.serial_number.clone()),
-        );
-        item.insert("subject".to_string(), DynamoDbStorage::s(record.subject));
-        item.insert(
-            "sans".to_string(),
-            aws_sdk_dynamodb::types::AttributeValue::L(
-                record.sans.into_iter().map(DynamoDbStorage::s).collect(),
-            ),
-        );
-        item.insert(
-            "not_before".to_string(),
-            DynamoDbStorage::s(record.not_before),
-        );
-        item.insert(
-            "not_after".to_string(),
-            DynamoDbStorage::s(record.not_after),
-        );
-        item.insert(
-            "issued_at".to_string(),
-            DynamoDbStorage::s(record.issued_at),
-        );
-        item.insert(
-            "operation".to_string(),
-            DynamoDbStorage::s(record.operation),
-        );
-        item.insert("pem".to_string(), DynamoDbStorage::s(record.pem));
-        if let Some(provisioner) = record.provisioner {
-            item.insert("provisioner".to_string(), DynamoDbStorage::s(provisioner));
-        }
+        item.insert("sk".to_string(), DynamoDbStorage::s(sk));
 
         let result = self
             .client
@@ -147,93 +131,54 @@ impl crate::storage::Storage for DynamoDbStorage {
         &self,
         serial_number: &str,
     ) -> crate::error::Result<Option<crate::storage::CertificateRecord>> {
+        // The exact CN-bearing `sk` is unknown here, so query the unique `pk`
+        // partition and match the certificate item by its `cn:` sort-key prefix
+        // rather than issuing a `GetItem` that needs the full key.
         let resp = self
             .client
-            .get_item()
+            .query()
             .table_name(&self.table_name)
-            .key(
-                "pk",
+            .key_condition_expression("#pk = :pk AND begins_with(#sk, :sk)")
+            .expression_attribute_names("#pk", "pk")
+            .expression_attribute_names("#sk", "sk")
+            .expression_attribute_values(
+                ":pk",
                 DynamoDbStorage::s(DynamoDbStorage::certificate_pk(serial_number)),
             )
-            .key("sk", DynamoDbStorage::s(CERTIFICATE_TYPE))
+            .expression_attribute_values(":sk", DynamoDbStorage::s(CERTIFICATE_SK_PREFIX))
+            .limit(1)
             .send()
             .await
             .map_err(|e| {
                 crate::error::Error::Internal(format!(
-                    "dynamodb GetItem(certificate {serial_number}): {}",
+                    "dynamodb Query(certificate {serial_number}): {}",
                     aws_smithy_types::error::display::DisplayErrorContext(&e)
                 ))
             })?;
-        let Some(item) = resp.item() else {
+        let Some(item) = resp.items().first() else {
             return Ok(None);
         };
-        Ok(Some(parse_certificate(item)?))
-    }
-
-    async fn list_certificates(
-        &self,
-    ) -> crate::error::Result<Vec<crate::storage::CertificateRecord>> {
-        let mut out = Vec::new();
-        let mut start_key: Option<
-            std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>,
-        > = None;
-        loop {
-            let resp = self
-                .client
-                .query()
-                .table_name(&self.table_name)
-                .index_name(INVERTED_INDEX)
-                .key_condition_expression("#sk = :sk")
-                .expression_attribute_names("#sk", "sk")
-                .expression_attribute_values(":sk", DynamoDbStorage::s(CERTIFICATE_TYPE))
-                .set_exclusive_start_key(start_key.take())
-                .send()
-                .await
-                .map_err(|e| {
-                    crate::error::Error::Internal(format!(
-                        "dynamodb Query(certificates): {}",
-                        aws_smithy_types::error::display::DisplayErrorContext(&e)
-                    ))
-                })?;
-            for item in resp.items() {
-                out.push(parse_certificate(item)?);
-            }
-            match resp.last_evaluated_key() {
-                Some(key) if !key.is_empty() => start_key = Some(key.clone()),
-                _ => break,
-            }
-        }
-        Ok(out)
+        let record = serde_dynamo::aws_sdk_dynamodb_1::from_item(item.clone()).map_err(|e| {
+            crate::error::Error::Internal(format!(
+                "dynamodb deserialize certificate {serial_number}: {e}"
+            ))
+        })?;
+        Ok(Some(record))
     }
 
     async fn revoke(&self, record: crate::storage::RevocationRecord) -> crate::error::Result<()> {
-        let mut item = std::collections::HashMap::new();
+        let mut item: std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue> =
+            serde_dynamo::aws_sdk_dynamodb_1::to_item(&record).map_err(|e| {
+                crate::error::Error::Internal(format!(
+                    "dynamodb serialize revocation {}: {e}",
+                    record.serial_number
+                ))
+            })?;
         item.insert(
             "pk".to_string(),
             DynamoDbStorage::s(DynamoDbStorage::revocation_pk(&record.serial_number)),
         );
         item.insert("sk".to_string(), DynamoDbStorage::s(REVOCATION_TYPE));
-        item.insert(
-            "serial_number".to_string(),
-            DynamoDbStorage::s(record.serial_number.clone()),
-        );
-        item.insert(
-            "reason_code".to_string(),
-            aws_sdk_dynamodb::types::AttributeValue::N(record.reason_code.to_string()),
-        );
-        item.insert(
-            "revoked_at".to_string(),
-            DynamoDbStorage::s(record.revoked_at.clone()),
-        );
-        if let Some(reason) = &record.reason {
-            item.insert("reason".to_string(), DynamoDbStorage::s(reason.clone()));
-        }
-        if let Some(provisioner) = &record.provisioner {
-            item.insert(
-                "provisioner".to_string(),
-                DynamoDbStorage::s(provisioner.clone()),
-            );
-        }
 
         let result = self
             .client
@@ -285,7 +230,12 @@ impl crate::storage::Storage for DynamoDbStorage {
         let Some(item) = resp.item() else {
             return Ok(None);
         };
-        Ok(Some(parse_revocation(item)?))
+        let record = serde_dynamo::aws_sdk_dynamodb_1::from_item(item.clone()).map_err(|e| {
+            crate::error::Error::Internal(format!(
+                "dynamodb deserialize revocation {serial_number}: {e}"
+            ))
+        })?;
+        Ok(Some(record))
     }
 
     async fn list_revocations(
@@ -313,9 +263,15 @@ impl crate::storage::Storage for DynamoDbStorage {
                         aws_smithy_types::error::display::DisplayErrorContext(&e)
                     ))
                 })?;
-            for item in resp.items() {
-                out.push(parse_revocation(item)?);
-            }
+            let page: Vec<crate::storage::RevocationRecord> =
+                serde_dynamo::aws_sdk_dynamodb_1::from_items(resp.items().to_vec()).map_err(
+                    |e| {
+                        crate::error::Error::Internal(format!(
+                            "dynamodb deserialize revocations: {e}"
+                        ))
+                    },
+                )?;
+            out.extend(page);
             match resp.last_evaluated_key() {
                 Some(key) if !key.is_empty() => start_key = Some(key.clone()),
                 _ => break,
@@ -373,79 +329,6 @@ impl crate::storage::Storage for DynamoDbStorage {
     }
 }
 
-/// Map a DynamoDB item into a [`crate::storage::CertificateRecord`].
-fn parse_certificate(
-    item: &std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>,
-) -> crate::error::Result<crate::storage::CertificateRecord> {
-    let sans = match item.get("sans") {
-        Some(value) => value
-            .as_l()
-            .map_err(|_| {
-                crate::error::Error::Internal(
-                    "dynamodb certificate: sans is not a list".to_string(),
-                )
-            })?
-            .iter()
-            .map(|v| {
-                v.as_s().cloned().map_err(|_| {
-                    crate::error::Error::Internal(
-                        "dynamodb certificate: san is not a string".to_string(),
-                    )
-                })
-            })
-            .collect::<crate::error::Result<Vec<String>>>()?,
-        None => Vec::new(),
-    };
-    Ok(crate::storage::CertificateRecord {
-        serial_number: read_string(item, "serial_number")?,
-        subject: read_string(item, "subject")?,
-        sans,
-        not_before: read_string(item, "not_before")?,
-        not_after: read_string(item, "not_after")?,
-        issued_at: read_string(item, "issued_at")?,
-        provisioner: item.get("provisioner").and_then(|v| v.as_s().ok()).cloned(),
-        operation: read_string(item, "operation")?,
-        pem: read_string(item, "pem")?,
-    })
-}
-
-/// Map a DynamoDB item into a [`crate::storage::RevocationRecord`].
-fn parse_revocation(
-    item: &std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>,
-) -> crate::error::Result<crate::storage::RevocationRecord> {
-    let serial_number = read_string(item, "serial_number")?;
-    let revoked_at = read_string(item, "revoked_at")?;
-    let reason_code = item
-        .get("reason_code")
-        .and_then(|v| v.as_n().ok())
-        .ok_or_else(|| {
-            crate::error::Error::Internal("dynamodb revocation: missing reason_code".to_string())
-        })?
-        .parse::<i32>()
-        .map_err(|e| {
-            crate::error::Error::Internal(format!("dynamodb revocation: bad reason_code: {e}"))
-        })?;
-    let reason = item.get("reason").and_then(|v| v.as_s().ok()).cloned();
-    let provisioner = item.get("provisioner").and_then(|v| v.as_s().ok()).cloned();
-    Ok(crate::storage::RevocationRecord {
-        serial_number,
-        reason_code,
-        reason,
-        revoked_at,
-        provisioner,
-    })
-}
-
-fn read_string(
-    item: &std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>,
-    key: &str,
-) -> crate::error::Result<String> {
-    item.get(key)
-        .and_then(|v| v.as_s().ok())
-        .cloned()
-        .ok_or_else(|| crate::error::Error::Internal(format!("dynamodb item: missing {key}")))
-}
-
 #[cfg(test)]
 mod tests {
     fn client(rules: &[&aws_smithy_mocks::Rule]) -> aws_sdk_dynamodb::Client {
@@ -501,7 +384,7 @@ mod tests {
         );
         item.insert(
             "sk".to_string(),
-            aws_sdk_dynamodb::types::AttributeValue::S("certificate".to_string()),
+            aws_sdk_dynamodb::types::AttributeValue::S("cn:host.example".to_string()),
         );
         item.insert(
             "serial_number".to_string(),
@@ -571,12 +454,12 @@ mod tests {
     #[tokio::test]
     async fn get_certificate_parses_item() {
         use crate::storage::Storage;
-        let get = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::get_item).then_output(|| {
-            aws_sdk_dynamodb::operation::get_item::GetItemOutput::builder()
-                .set_item(Some(certificate_item("123")))
+        let query = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::query).then_output(|| {
+            aws_sdk_dynamodb::operation::query::QueryOutput::builder()
+                .set_items(Some(vec![certificate_item("123")]))
                 .build()
         });
-        let storage = super::DynamoDbStorage::new(client(&[&get]), "tbl".to_string());
+        let storage = super::DynamoDbStorage::new(client(&[&query]), "tbl".to_string());
         let record = storage.get_certificate("123").await.unwrap().unwrap();
         assert_eq!(record.serial_number, "123");
         assert_eq!(record.subject, "host.example");
@@ -588,27 +471,13 @@ mod tests {
     #[tokio::test]
     async fn get_certificate_missing_returns_none() {
         use crate::storage::Storage;
-        let get = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::get_item).then_output(|| {
-            aws_sdk_dynamodb::operation::get_item::GetItemOutput::builder().build()
+        let query = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::query).then_output(|| {
+            aws_sdk_dynamodb::operation::query::QueryOutput::builder()
+                .set_items(Some(vec![]))
+                .build()
         });
-        let storage = super::DynamoDbStorage::new(client(&[&get]), "tbl".to_string());
-        assert_eq!(storage.get_certificate("404").await.unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn list_certificates_queries_inverted_index() {
-        use crate::storage::Storage;
-        let query = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::query)
-            .match_requests(|req| req.index_name() == Some("inverted"))
-            .then_output(|| {
-                aws_sdk_dynamodb::operation::query::QueryOutput::builder()
-                    .set_items(Some(vec![super::tests::certificate_item("123")]))
-                    .build()
-            });
         let storage = super::DynamoDbStorage::new(client(&[&query]), "tbl".to_string());
-        let all = storage.list_certificates().await.unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].serial_number, "123");
+        assert_eq!(storage.get_certificate("404").await.unwrap(), None);
     }
 
     #[tokio::test]

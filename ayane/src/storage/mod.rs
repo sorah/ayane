@@ -92,9 +92,6 @@ pub trait Storage: Send + Sync {
         serial_number: &str,
     ) -> crate::error::Result<Option<CertificateRecord>>;
 
-    /// List all issued certificates. Order is unspecified.
-    async fn list_certificates(&self) -> crate::error::Result<Vec<CertificateRecord>>;
-
     /// Record a revocation. Idempotent: revoking an already-revoked serial
     /// succeeds and keeps the original record.
     async fn revoke(&self, record: RevocationRecord) -> crate::error::Result<()>;

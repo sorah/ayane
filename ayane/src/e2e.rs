@@ -145,7 +145,9 @@ fn make_csr(leaf: &p256::SecretKey, common_name: &str, sans: &[&str]) -> String 
 
     let general_names: Vec<_> = sans
         .iter()
-        .map(|s| crate::san::San::parse(s).to_general_name().unwrap())
+        .map(|s| {
+            x509_cert::ext::pkix::name::GeneralName::try_from(&crate::san::San::parse(s)).unwrap()
+        })
         .collect();
     let san = x509_cert::ext::pkix::SubjectAltName(general_names);
     let extension = x509_cert::ext::Extension {
@@ -347,8 +349,8 @@ async fn issued_certificates_are_recorded() {
         .expect("renewal is recorded");
     assert_eq!(renew_record.operation, "renew");
     assert_eq!(renew_record.provisioner, None);
-
-    assert_eq!(h.storage.list_certificates().await.unwrap().len(), 2);
+    // Issue and renew produced two distinct inventory entries.
+    assert_ne!(issued.serial_number, renewed.serial_number);
 }
 
 #[tokio::test]
@@ -653,7 +655,7 @@ fn cert_san_strings(cert: &x509_cert::Certificate) -> Vec<String> {
                 let san = x509_cert::ext::pkix::SubjectAltName::from_der(ext.extn_value.as_bytes())
                     .unwrap();
                 for gn in san.0.iter() {
-                    if let Some(s) = crate::san::San::from_general_name(gn) {
+                    if let Ok(s) = crate::san::San::try_from(gn) {
                         out.push(s.to_string());
                     }
                 }
@@ -666,7 +668,7 @@ fn cert_san_strings(cert: &x509_cert::Certificate) -> Vec<String> {
 #[tokio::test]
 async fn webhook_enriches_sign_with_additional_san() {
     let webhook = TestWebhook::new(vec![crate::webhook::WebhookResponse {
-        additional_sans: vec!["extra.example".to_string()],
+        additional_sans: vec![crate::san::San::parse("extra.example")],
         ..Default::default()
     }]);
     let webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>> = vec![webhook.clone()];

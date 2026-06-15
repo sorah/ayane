@@ -57,6 +57,11 @@ impl Service {
         }
     }
 
+    /// The issuing CA, for self-issued serving TLS (`crate::tls`).
+    pub fn ca(&self) -> std::sync::Arc<crate::ca::CertificateAuthority> {
+        std::sync::Arc::clone(&self.ca)
+    }
+
     /// `GET /v1/health`.
     pub fn health(&self) -> ayane_protocol::HealthResponse {
         ayane_protocol::HealthResponse {
@@ -687,7 +692,7 @@ fn cert_sans(cert: &x509_cert::Certificate) -> crate::error::Result<Vec<crate::s
                         crate::error::Error::Internal(format!("decode SAN from certificate: {e}"))
                     })?;
                 for gn in san.0.iter() {
-                    if let Some(s) = crate::san::San::from_general_name(gn) {
+                    if let Ok(s) = crate::san::San::try_from(gn) {
                         out.push(s);
                     }
                 }

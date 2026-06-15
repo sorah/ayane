@@ -380,13 +380,50 @@ HTTP server settings. This object has `deny_unknown_fields`.
 | --- | --- | --- | --- |
 | `listen` | string | default `"0.0.0.0:9443"` | Listen address for the standalone (non-Lambda) server. |
 | `external_url` | string | default `null` | Public base URL, used to validate token `aud` and DPoP `htu`. |
+| `tls` | object ([TlsConfig](#tlsconfig)) | default (enabled) | Self-issued serving TLS for the standalone server. |
 
 When `external_url` is unset, the server logs a warning and derives the token audience and DPoP `htu` from the request `Host` / `X-Forwarded-*` headers. Set `external_url` to the public base URL (for example `https://ca.example.com`) in production so that audience and proof-of-possession binding are not attacker-influenceable. Under AWS Lambda (`AWS_LAMBDA_RUNTIME_API` set), `listen` is ignored and `external_url` plays the same role. See [deployment](deployment.md).
 
 ```json
 {
   "listen": "0.0.0.0:9443",
-  "external_url": "https://ca.example.com"
+  "external_url": "https://ca.example.com",
+  "tls": { "enabled": true, "dns_names": ["ca.example.com"] }
+}
+```
+
+### TlsConfig
+
+Self-issued serving TLS for the **standalone** server. When enabled (the default), the server mints a leaf certificate from its own configured CA, serves HTTPS with it, and renews it in the background before expiry — the same self-served-TLS pattern as step-ca. The serving leaf chains to the same root clients fetch from `GET /v1/roots`, so no separate serving certificate is needed. The serving private key is an ephemeral in-memory P-256 key, regenerated on every (re)issue and never written to disk. This object has `deny_unknown_fields`.
+
+Under AWS Lambda the Function URL terminates TLS, so this block is **silently ignored** there (no error). To terminate TLS at a fronting proxy instead, set `enabled: false` and serve plaintext HTTP.
+
+| Field | Type | Required / default | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | default `true` | Serve HTTPS. When `false`, the standalone server serves plaintext HTTP. |
+| `dns_names` | array of string | default `[]` | Explicit DNS SANs (see SAN resolution below). |
+| `ip_addresses` | array of string | default `[]` | Explicit IP SANs. Each must parse as an IP address or boot fails. |
+| `validity` | [duration](#durations) | default `"24h"` | Lifetime of each self-issued serving certificate. |
+| `renew_before` | [duration](#durations) | default `validity / 3` | Re-issue this long before expiry (renews at ~2/3 of the lifetime). Must be shorter than `validity` or boot fails. |
+| `renew_jitter` | [duration](#durations) | default `validity / 20` | Maximum random amount subtracted from the renewal instant, to de-sync a fleet. |
+
+**SAN resolution.** Like step-ca, ayane does not infer the OS hostname; the serving SANs are resolved at startup in precedence order:
+
+1. **Explicit** — if `dns_names` or `ip_addresses` is set, the combined list is used verbatim.
+2. **From `external_url`** — otherwise the host of `server.external_url` becomes a single SAN (DNS, or IP if the host is an IP literal; the port is dropped).
+3. **Loopback fallback** — otherwise `localhost`, `127.0.0.1`, `::1` (step-ca's default).
+
+The subject `commonName` is the first DNS SAN. Note that with the default `listen` of `0.0.0.0:9443` and no `external_url` or explicit SANs, the loopback-only certificate will not match a remote client connecting by public name — set `external_url` or `dns_names` for any non-local deployment.
+
+```json
+{
+  "listen": "0.0.0.0:9443",
+  "external_url": "https://ca.example.com",
+  "tls": {
+    "enabled": true,
+    "dns_names": ["ca.example.com"],
+    "validity": "24h"
+  }
 }
 ```
 

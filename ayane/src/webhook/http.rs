@@ -124,7 +124,10 @@ mod tests {
             operation: crate::webhook::Operation::Sign,
             provisioner: Some("acme".to_string()),
             subject: "example.com".to_string(),
-            sans: vec!["example.com".to_string(), "www.example.com".to_string()],
+            sans: vec![
+                crate::san::San::parse("example.com"),
+                crate::san::San::parse("www.example.com"),
+            ],
             csr_der: None,
             previous_certificate_der: None,
             not_before: "2026-06-14T00:00:00Z".parse().unwrap(),
@@ -201,7 +204,8 @@ mod tests {
         assert_eq!(json["operation"], "sign");
         assert_eq!(json["provisioner"], "acme");
         assert_eq!(json["subject"], "example.com");
-        assert_eq!(json["sans"][1], "www.example.com");
+        assert_eq!(json["sans"][1]["type"], "dns");
+        assert_eq!(json["sans"][1]["value"], "www.example.com");
         assert_eq!(json["not_after"], "2026-09-14T00:00:00Z");
         // csr_der is skipped when None.
         assert!(json.get("csr_der").is_none());

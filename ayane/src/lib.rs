@@ -30,6 +30,7 @@ pub mod server;
 pub mod service;
 pub mod storage;
 pub mod template;
+pub mod tls;
 pub mod webhook;
 pub mod x509;
 

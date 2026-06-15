@@ -127,7 +127,8 @@ Create `config.json`. Paste the JWK you derived above into `provisioners[].key`.
   "storage": { "type": "sqlite", "path": ":memory:" },
   "server": {
     "listen": "127.0.0.1:9443",
-    "external_url": "http://127.0.0.1:9443"
+    "external_url": "http://127.0.0.1:9443",
+    "tls": { "enabled": false }
   }
 }
 ```
@@ -139,9 +140,10 @@ Notes on the defaults this relies on:
 | `storage` `{"type":"sqlite","path":":memory:"}` | The issued-certificate inventory, revocation records, and the anti-replay token denylist live in an in-process SQLite database — non-durable, fine for a demo. Use a file `path` or `dynamodb` for anything real ([storage](storage.md)). |
 | `server.listen` | Address the standalone server binds. Defaults to `0.0.0.0:9443` when omitted. |
 | `server.external_url` | Public base URL. Token `aud` and DPoP `htu` are validated against it. If you omit it the server logs a warning and derives them from request `Host`/`X-Forwarded-*` headers — always set it for any deployment behind an untrusted proxy. |
+| `server.tls` `{"enabled":false}` | Serve plaintext HTTP for this demo. By default the standalone server self-issues a serving certificate from its own CA and serves HTTPS; we disable that here so the `http://127.0.0.1:9443` client commands below work without configuring the CLI to trust the dev root. |
 | `default_template` | Template applied when a provisioner does not name one. A reference to an undefined template name fails startup. |
 
-`ayane` terminates TLS externally (a reverse proxy, or an AWS Lambda Function URL). For this local demo we run plain HTTP on `127.0.0.1` and tell the client `--insecure` is not even needed because there is no TLS to verify. A working example with the AWS providers wired up is at [`examples/ayane.example.json`](../examples/ayane.example.json).
+For this local demo we run plain HTTP on `127.0.0.1` (`server.tls.enabled = false`), so there is no TLS to verify. In a real standalone deployment ayane serves HTTPS by default with a self-issued, auto-renewing certificate from its own CA — see [deployment](deployment.md#self-issued-serving-tls). A working example with the AWS providers wired up is at [`examples/ayane.example.json`](../examples/ayane.example.json).
 
 ## Run the server
 

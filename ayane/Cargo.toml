@@ -21,6 +21,7 @@ ayane-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
+serde_dynamo = { workspace = true }
 chrono = { workspace = true }
 humantime-serde = { workspace = true }
 thiserror = { workspace = true }
@@ -34,6 +35,8 @@ bytes = { workspace = true }
 lambda_http = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+rustls = { workspace = true }
+axum-server = { workspace = true }
 
 x509-cert = { workspace = true }
 der = { workspace = true }

@@ -1,10 +1,8 @@
 # ayane
 
-**ayane** is an AWS-native, [step-ca](https://smallstep.com/docs/step-ca/)-style X.509 certificate authority written in Rust. It issues short-lived leaf certificates against a one-time issuance token (OTT) JWT, and lets key holders **renew, rekey, and self-revoke** their own certificates by proving possession of the private key with an [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449) DPoP proof — no second shared secret required.
+**ayane** is an AWS-native, [step-ca](https://smallstep.com/docs/step-ca/)-style X.509 certificate authority. It issues short-lived leaf certificates against a one-time issuance token (OTT) JWT, and lets key holders **renew, rekey, and self-revoke** their own certificates by proving possession of the private key with an [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449) DPoP proof.
 
-It runs either as a standalone HTTP server or behind an AWS Lambda Function URL, and stores its state in SQLite (for local/single-node use) or Amazon DynamoDB. The CA private key can live in a file or in AWS KMS.
-
-> Status: early (`0.1.0`). The on-the-wire API and configuration schema may still change.
+It supports multiple cloud environments, such as on AWS (KMS, Lambda, Function URL, EventBridge, DynamoDB) or on-premises (file based key, standalone HTTPS, sqlite3).
 
 ## Features
 
@@ -13,8 +11,6 @@ It runs either as a standalone HTTP server or behind an AWS Lambda Function URL,
 - **Pluggable, AWS-native backends** — CA key in a file or AWS KMS; audit events to stdout, a file, or Amazon EventBridge; revocation and anti-replay state in SQLite or Amazon DynamoDB.
 - **Issuance webhooks** — gate and/or customize certificates from an external HTTP or AWS Lambda service via a single typed response.
 - **Certificate templates** — declarative key usage, extended key usage, CA/path-length constraints, and validity policy.
-- **Dual deployment** — one `axum` router served standalone over Tokio, or via `lambda_http` behind a Function URL, with TLS terminated externally.
-- **RFC 7807 errors** — every failure is an `application/problem+json` body.
 
 ## Quick start
 
