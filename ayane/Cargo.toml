@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "ayane-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "ayane-csr"
+path = "src/bin/ayane-csr.rs"
+
 [dependencies]
 ayane-protocol = { workspace = true }
 
