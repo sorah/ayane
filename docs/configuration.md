@@ -70,13 +70,14 @@ The issuing certificate authority. This object has `deny_unknown_fields`.
 | --- | --- | --- | --- |
 | `certificate` | [PemSource](#pemsource) | required | The issuing (intermediate or root) certificate that signs leaf certificates. |
 | `key` | object ([KeyConfig](#keyconfig)) | required | The signing key backend. |
-| `chain` | array of [PemSource](#pemsource) | default `[]` | Additional issuer certificates, ordered up the chain, returned to clients alongside the leaf. |
+| `chain` | array of [PemSource](#pemsource) | default `[]` | Additional issuer-side certificates returned to clients alongside the leaf. Normally the issuer's parents ordered up the chain; may also carry cross-signed intermediates (see below). |
 | `roots` | array of [PemSource](#pemsource) | default `[]` | Trusted root certificate(s) served at `GET /v1/roots`. |
 
 Chain and root handling (see [`build_service`](../ayane/src/builder.rs)):
 
-- The fullchain returned to clients always begins with the issuing `certificate`, then each entry of `chain` in order. You do not list the issuing certificate again in `chain`; it is prepended automatically. (The bundled `examples/ayane.example.json` does repeat it in `chain`, which would duplicate the issuer in the served chain — list only the parents of the issuer here.)
-- If `roots` is empty, ayane serves the issuing `certificate` itself as the sole root at `/v1/roots`.
+- The fullchain returned to clients always begins with the issuing `certificate`, then each entry of `chain` in order, served verbatim. You do not list the issuing certificate again in `chain`; it is prepended automatically. (The bundled `examples/ayane.example.json` does repeat it in `chain`, which would duplicate the issuer in the served chain — list only the parents of the issuer here.)
+- `chain` is not restricted to a single linear path. To support cross-root trust during a CA migration, append a cross-signed copy of the issuing intermediate — one bearing the same subject/key but signed by the *old* root — after the normal parents. Clients that still trust only the old root can then build a path to it from the fullchain, while clients trusting the new root use the canonical path. This mirrors step-ca, where the intermediate is a PEM bundle and any extra (incl. cross-signed) certificates are returned as-is.
+- `roots` may list more than one root. During a root rotation, serve both the old and new roots here so relying parties fetching `GET /v1/roots` trust certificates issued under either. If `roots` is empty, ayane serves the issuing `certificate` itself as the sole root.
 
 ```json
 {

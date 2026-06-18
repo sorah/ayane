@@ -87,10 +87,14 @@ pub struct CaConfig {
     pub certificate: PemSource,
     /// The signing key.
     pub key: KeyConfig,
-    /// Additional chain certificates returned to clients (issuer up the chain).
+    /// Additional issuer-side certificates returned to clients, served verbatim
+    /// after the issuing `certificate`. Normally the issuer's parents up the
+    /// chain; may also carry a cross-signed intermediate (same subject/key,
+    /// signed by an old root) so clients can build a path during a CA migration.
     #[serde(default)]
     pub chain: Vec<PemSource>,
-    /// Trusted root certificate(s) served at `/roots`.
+    /// Trusted root certificate(s) served at `/roots`. List both old and new
+    /// roots to keep either trusted across a root rotation.
     #[serde(default)]
     pub roots: Vec<PemSource>,
 }
