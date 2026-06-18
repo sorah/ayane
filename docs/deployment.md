@@ -150,7 +150,7 @@ Set `ca.key` to a KMS asymmetric key so the CA private key never leaves KMS. The
   "ca": {
     "certificate": { "file": "ca/intermediate.crt" },
     "key": {
-      "type": "kms",
+      "type": "aws_kms",
       "key_id": "alias/ayane-intermediate",
       "algorithm": "ECDSA_SHA256",
       "region": "us-east-1"
@@ -163,7 +163,7 @@ Set `ca.key` to a KMS asymmetric key so the CA private key never leaves KMS. The
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `type` | yes | `"kms"`. |
+| `type` | yes | `"aws_kms"`. |
 | `key_id` | yes | KMS key id, ARN, or alias (e.g. `alias/ayane-intermediate`). |
 | `algorithm` | yes | Signature algorithm; must match the KMS key's key spec (see below). |
 | `region` | no | Region override for the KMS client. |

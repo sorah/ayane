@@ -83,7 +83,7 @@ Chain and root handling (see [`build_service`](../ayane/src/builder.rs)):
 {
   "certificate": { "file": "ca/intermediate.crt" },
   "key": {
-    "type": "kms",
+    "type": "aws_kms",
     "key_id": "alias/ayane-intermediate",
     "algorithm": "ECDSA_SHA256",
     "region": "us-east-1"
@@ -94,7 +94,7 @@ Chain and root handling (see [`build_service`](../ayane/src/builder.rs)):
 
 ### KeyConfig
 
-The signing key is an internally tagged enum keyed on `type`, with snake_case variant names: `"file"` or `"kms"`.
+The signing key is an internally tagged enum keyed on `type`, with snake_case variant names: `"file"` or `"aws_kms"`.
 
 #### `type: "file"` — local PEM private key
 
@@ -115,18 +115,18 @@ Exactly one of `pem` / `file` must be present; otherwise startup fails with `fil
 { "type": "file", "file": "ca/intermediate.key", "algorithm": "RSA_PKCS1_SHA256" }
 ```
 
-#### `type: "kms"` — AWS KMS asymmetric key
+#### `type: "aws_kms"` — AWS KMS asymmetric key
 
 | Field | Type | Required / default | Description |
 | --- | --- | --- | --- |
-| `type` | string | required | Literal `"kms"`. |
+| `type` | string | required | Literal `"aws_kms"`. |
 | `key_id` | string | required | KMS key id, ARN, or alias (e.g. `alias/ayane-intermediate`). |
 | `algorithm` | string | required | Signature algorithm matching the KMS key. See [algorithm values](#algorithm-values). |
 | `region` | string | optional | Region override for the KMS client. Defaults to the ambient AWS configuration. |
 
 ```json
 {
-  "type": "kms",
+  "type": "aws_kms",
   "key_id": "alias/ayane-intermediate",
   "algorithm": "ECDSA_SHA256",
   "region": "us-east-1"

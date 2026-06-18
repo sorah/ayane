@@ -2,7 +2,7 @@
 //! private key (PKCS#8 for EC P-256/P-384, PKCS#8 or PKCS#1 for RSA).
 //!
 //! Intended for development, on-box deployments, and tests. Production
-//! deployments should prefer [`crate::key_provider::kms`].
+//! deployments should prefer [`crate::key_provider::aws_kms`].
 
 enum FileKey {
     EcP256(Box<p256::ecdsa::SigningKey>),

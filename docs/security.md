@@ -8,7 +8,7 @@ ayane is split into a few layers, each with a different trust posture.
 
 | Boundary | Trusted to | Notes |
 | --- | --- | --- |
-| CA signing key | Mint certificates the whole PKI trusts | Protect with AWS KMS (`{"type":"kms"}` in [`ca.key`](configuration.md)); the key never leaves the HSM-backed service |
+| CA signing key | Mint certificates the whole PKI trusts | Protect with AWS KMS (`{"type":"aws_kms"}` in [`ca.key`](configuration.md)); the key never leaves the HSM-backed service |
 | Provisioner keys | Authorize `sign`/`revoke` requests | A provisioner's *private* key is held by the caller; ayane stores only the *public* JWK |
 | Caller's certificate key | Authorize `renew`/`rekey`/self-`revoke` via DPoP | Proven by signature, never trusted from the request body |
 | Webhook endpoints | Approve or enrich issuance | Outbound; authenticated to ayane via HMAC and/or bearer token |
@@ -192,7 +192,7 @@ The CA signing key is the single most sensitive secret in the system. ayane supp
 {
   "ca": {
     "key": {
-      "type": "kms",
+      "type": "aws_kms",
       "key_id": "arn:aws:kms:us-east-1:123456789012:key/abcd-...",
       "algorithm": "ECDSA_SHA256"
     }

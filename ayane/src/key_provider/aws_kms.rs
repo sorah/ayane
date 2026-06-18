@@ -19,14 +19,14 @@ pub(crate) async fn client(region: Option<&str>) -> aws_sdk_kms::Client {
 }
 
 /// A signing key fronted by AWS KMS.
-pub struct KmsKeyProvider {
+pub struct AwsKmsKeyProvider {
     client: aws_sdk_kms::Client,
     key_id: String,
     algorithm: crate::crypto::SignatureAlgorithm,
     public_key_der: Vec<u8>,
 }
 
-impl KmsKeyProvider {
+impl AwsKmsKeyProvider {
     /// Construct a provider for `key_id`, fetching its public key up front.
     pub async fn new(
         client: aws_sdk_kms::Client,
@@ -52,7 +52,7 @@ impl KmsKeyProvider {
             })?
             .as_ref()
             .to_vec();
-        Ok(KmsKeyProvider {
+        Ok(AwsKmsKeyProvider {
             client,
             key_id,
             algorithm,
@@ -82,7 +82,7 @@ impl KmsKeyProvider {
 }
 
 #[async_trait::async_trait]
-impl crate::key_provider::KeyProvider for KmsKeyProvider {
+impl crate::key_provider::KeyProvider for AwsKmsKeyProvider {
     fn algorithm(&self) -> crate::crypto::SignatureAlgorithm {
         self.algorithm
     }
@@ -145,7 +145,7 @@ mod tests {
             [&get_pub, &sign]
         );
 
-        let provider = super::KmsKeyProvider::new(
+        let provider = super::AwsKmsKeyProvider::new(
             client,
             "alias/test",
             crate::crypto::SignatureAlgorithm::EcdsaSha256,

@@ -5,8 +5,8 @@
 //! live in a local file or remotely in AWS KMS; the certificate-building engine
 //! only ever sees this trait, so it works identically against either.
 
+pub mod aws_kms;
 pub mod file;
-pub mod kms;
 
 /// Build the configured signing key provider.
 ///
@@ -42,16 +42,20 @@ pub async fn from_config(
                 )?) as std::sync::Arc<dyn KeyProvider>,
             )
         }
-        crate::config::KeyConfig::Kms {
+        crate::config::KeyConfig::AwsKms {
             key_id,
             algorithm,
             region,
         } => {
             let algorithm = crate::crypto::SignatureAlgorithm::parse(algorithm)?;
-            let client = crate::key_provider::kms::client(region.as_deref()).await;
+            let client = crate::key_provider::aws_kms::client(region.as_deref()).await;
             Ok(std::sync::Arc::new(
-                crate::key_provider::kms::KmsKeyProvider::new(client, key_id.clone(), algorithm)
-                    .await?,
+                crate::key_provider::aws_kms::AwsKmsKeyProvider::new(
+                    client,
+                    key_id.clone(),
+                    algorithm,
+                )
+                .await?,
             ) as std::sync::Arc<dyn KeyProvider>)
         }
     }

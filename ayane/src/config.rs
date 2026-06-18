@@ -116,7 +116,7 @@ pub enum KeyConfig {
         algorithm: Option<String>,
     },
     /// An AWS KMS asymmetric key.
-    Kms {
+    AwsKms {
         /// KMS key id, ARN or alias.
         key_id: String,
         /// Signature algorithm, e.g. `"ECDSA_SHA256"`.
