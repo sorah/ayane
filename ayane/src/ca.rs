@@ -77,6 +77,9 @@ pub struct CertificateAuthority {
     ca_spki_der: Vec<u8>,
     chain_pem: Vec<String>,
     roots_pem: Vec<String>,
+    /// SHA-256 of the signer (issuing) certificate DER, for the roots-signature
+    /// `x5t` thumbprint.
+    signer_leaf_sha256: [u8; 32],
 }
 
 impl CertificateAuthority {
@@ -103,6 +106,13 @@ impl CertificateAuthority {
             ));
         }
 
+        // The signer leaf for the roots signature is the issuing certificate
+        // (chain_pem[0]); its thumbprint authenticates the out-of-band chain.
+        let signer_leaf_sha256 = {
+            use sha2::Digest;
+            sha2::Sha256::digest(ca_cert.to_der()?).into()
+        };
+
         Ok(CertificateAuthority {
             key,
             issuer_name,
@@ -110,6 +120,7 @@ impl CertificateAuthority {
             ca_spki_der,
             chain_pem,
             roots_pem,
+            signer_leaf_sha256,
         })
     }
 
@@ -126,6 +137,31 @@ impl CertificateAuthority {
     /// Trusted root PEM(s).
     pub fn roots_pem(&self) -> &[String] {
         &self.roots_pem
+    }
+
+    /// The signer certificate chain served at `/v1/roots/signer-chain`,
+    /// leaf-first (the issuing certificate, then any intermediates). This is the
+    /// configured `chain`.
+    pub fn signer_chain_pem(&self) -> &[String] {
+        &self.chain_pem
+    }
+
+    /// The signing algorithm of the CA key (and therefore the roots-signature
+    /// `alg`).
+    pub fn signing_algorithm(&self) -> crate::crypto::SignatureAlgorithm {
+        self.key.algorithm()
+    }
+
+    /// SHA-256 of the signer (issuing) certificate DER, for the `x5t` thumbprint.
+    pub fn signer_leaf_sha256(&self) -> &[u8; 32] {
+        &self.signer_leaf_sha256
+    }
+
+    /// Sign an HTTP message signature base with the CA key, returning the
+    /// signature in RFC 9421 form (P1363 `r‖s` for ECDSA).
+    pub async fn sign_http_message(&self, base: &[u8]) -> crate::error::Result<Vec<u8>> {
+        let der = self.key.sign(base).await?;
+        self.key.algorithm().rfc9421_signature_from_der(&der)
     }
 
     /// Build, sign and return a leaf certificate.

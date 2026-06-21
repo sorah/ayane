@@ -21,6 +21,10 @@ pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/v1/health", axum::routing::get(health))
         .route("/v1/roots", axum::routing::get(roots))
+        .route(
+            "/v1/roots/signer-chain",
+            axum::routing::get(roots_signer_chain),
+        )
         .route("/v1/provisioners", axum::routing::get(provisioners))
         .route("/v1/sign", axum::routing::post(sign))
         .route("/v1/renew", axum::routing::post(renew))
@@ -161,8 +165,67 @@ async fn health(
 
 async fn roots(
     axum::extract::State(state): axum::extract::State<AppState>,
-) -> axum::Json<ayane_protocol::RootsResponse> {
-    axum::Json(state.service.roots())
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    let signed = state.service.signed_roots().await?;
+    // Return the exact bytes that were digested and signed, not re-serialized
+    // JSON, so the client's recomputed Content-Digest matches.
+    let mut response = (axum::http::StatusCode::OK, signed.body).into_response();
+    let headers = response.headers_mut();
+    set_header(
+        headers,
+        axum::http::header::CONTENT_TYPE.as_str(),
+        signed.content_type,
+    )?;
+    set_header(
+        headers,
+        ayane_protocol::httpsig::CONTENT_DIGEST_HEADER,
+        &signed.content_digest,
+    )?;
+    set_header(
+        headers,
+        ayane_protocol::httpsig::SIGNATURE_KEY_HEADER,
+        &signed.signature_key,
+    )?;
+    set_header(
+        headers,
+        ayane_protocol::httpsig::SIGNATURE_INPUT_HEADER,
+        &signed.signature_input,
+    )?;
+    set_header(
+        headers,
+        ayane_protocol::httpsig::SIGNATURE_HEADER,
+        &signed.signature,
+    )?;
+    Ok(response)
+}
+
+async fn roots_signer_chain(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut response =
+        (axum::http::StatusCode::OK, state.service.signer_chain_pem()).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(ayane_protocol::httpsig::PEM_CHAIN_MEDIA_TYPE),
+    );
+    response
+}
+
+/// Insert a header from a string value, surfacing a non-ASCII value (which the
+/// signature material never is) as an internal error rather than panicking.
+fn set_header(
+    headers: &mut axum::http::HeaderMap,
+    name: &str,
+    value: &str,
+) -> Result<(), ApiError> {
+    let name = axum::http::HeaderName::from_bytes(name.as_bytes())
+        .map_err(|e| crate::error::Error::Internal(format!("invalid header name {name:?}: {e}")))?;
+    let value = axum::http::HeaderValue::from_str(value)
+        .map_err(|e| crate::error::Error::Internal(format!("invalid header value: {e}")))?;
+    headers.insert(name, value);
+    Ok(())
 }
 
 async fn provisioners(

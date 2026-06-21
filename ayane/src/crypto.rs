@@ -81,6 +81,44 @@ impl SignatureAlgorithm {
         }
     }
 
+    /// The RFC 9421 signature algorithm token for this algorithm.
+    ///
+    /// The SHA-384/512 RSA tokens are ayane-private (RFC 9421 only registers
+    /// `rsa-v1_5-sha256` for PKCS#1 v1.5); the only verifier is `ayane-cli`.
+    pub fn rfc9421_alg(self) -> &'static str {
+        match self {
+            SignatureAlgorithm::EcdsaSha256 => "ecdsa-p256-sha256",
+            SignatureAlgorithm::EcdsaSha384 => "ecdsa-p384-sha384",
+            SignatureAlgorithm::RsaPkcs1Sha256 => "rsa-v1_5-sha256",
+            SignatureAlgorithm::RsaPkcs1Sha384 => "rsa-v1_5-sha384",
+            SignatureAlgorithm::RsaPkcs1Sha512 => "rsa-v1_5-sha512",
+        }
+    }
+
+    /// Re-encode an X.509 signature into RFC 9421 form.
+    ///
+    /// RFC 9421 ECDSA signatures are the fixed-width IEEE P1363 `r‖s`
+    /// concatenation, whereas a [`crate::key_provider::KeyProvider`] returns the
+    /// DER `ECDSA-Sig-Value` used in certificates; this converts between them.
+    /// RSA PKCS#1 v1.5 bytes are identical in both encodings, so they pass
+    /// through unchanged.
+    pub fn rfc9421_signature_from_der(self, der: &[u8]) -> crate::error::Result<Vec<u8>> {
+        let invalid = |e: &dyn std::fmt::Display| {
+            crate::error::Error::Internal(format!("re-encode ECDSA signature: {e}"))
+        };
+        match self {
+            SignatureAlgorithm::EcdsaSha256 => p256::ecdsa::Signature::from_der(der)
+                .map(|s| s.to_bytes().to_vec())
+                .map_err(|e| invalid(&e)),
+            SignatureAlgorithm::EcdsaSha384 => p384::ecdsa::Signature::from_der(der)
+                .map(|s| s.to_bytes().to_vec())
+                .map_err(|e| invalid(&e)),
+            SignatureAlgorithm::RsaPkcs1Sha256
+            | SignatureAlgorithm::RsaPkcs1Sha384
+            | SignatureAlgorithm::RsaPkcs1Sha512 => Ok(der.to_vec()),
+        }
+    }
+
     /// Parse from a config string such as `"ECDSA_SHA256"` / `"RSA_PKCS1_SHA256"`.
     pub fn parse(s: &str) -> crate::error::Result<Self> {
         match s.to_ascii_uppercase().replace(['-', ' '], "_").as_str() {
@@ -186,5 +224,31 @@ mod tests {
             super::SignatureAlgorithm::EcdsaSha256
         );
         assert!(super::SignatureAlgorithm::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn ecdsa_der_to_rfc9421_is_fixed_width_p1363() {
+        use signature::Signer;
+        let key = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+        let signature: p256::ecdsa::Signature = key.sign(b"message");
+        let der = signature.to_der();
+        let raw = super::SignatureAlgorithm::EcdsaSha256
+            .rfc9421_signature_from_der(der.as_bytes())
+            .unwrap();
+        // P-256 P1363 signatures are exactly 64 bytes (r‖s) and equal the
+        // signature's own fixed-width encoding.
+        assert_eq!(raw.len(), 64);
+        assert_eq!(raw, signature.to_bytes().to_vec());
+    }
+
+    #[test]
+    fn rsa_signature_passes_through_unchanged() {
+        let bytes = vec![1u8, 2, 3, 4];
+        assert_eq!(
+            super::SignatureAlgorithm::RsaPkcs1Sha256
+                .rfc9421_signature_from_der(&bytes)
+                .unwrap(),
+            bytes
+        );
     }
 }

@@ -69,5 +69,7 @@ pub async fn build_service(
         events,
         templates: config.templates.clone(),
         default_template_name: config.default_template.clone(),
+        roots_signature_ttl: config.ca.roots_signature.ttl.get(),
+        external_url: config.server.external_url.clone(),
     }))
 }

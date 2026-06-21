@@ -70,8 +70,9 @@ The issuing certificate authority. This object has `deny_unknown_fields`.
 | --- | --- | --- | --- |
 | `certificate` | [PemSource](#pemsource) | required | The issuing (intermediate or root) certificate that signs leaf certificates. |
 | `key` | object ([KeyConfig](#keyconfig)) | required | The signing key backend. |
-| `chain` | array of [PemSource](#pemsource) | default `[]` | Additional issuer-side certificates returned to clients alongside the leaf. Normally the issuer's parents ordered up the chain; may also carry cross-signed intermediates (see below). |
+| `chain` | array of [PemSource](#pemsource) | default `[]` | Additional issuer-side certificates returned to clients alongside the leaf. Normally the issuer's parents ordered up the chain; may also carry cross-signed intermediates (see below). Also served as the signer chain at `GET /v1/roots/signer-chain`. |
 | `roots` | array of [PemSource](#pemsource) | default `[]` | Trusted root certificate(s) served at `GET /v1/roots`. |
+| `roots_signature` | object ([RootsSignatureConfig](#rootssignatureconfig)) | default `{}` | Settings for the RFC 9421 signature applied to the `GET /v1/roots` response. |
 
 Chain and root handling (see [`build_service`](../ayane/src/builder.rs)):
 
@@ -89,6 +90,21 @@ Chain and root handling (see [`build_service`](../ayane/src/builder.rs)):
     "region": "us-east-1"
   },
   "roots": [{ "file": "ca/root.crt" }]
+}
+```
+
+### RootsSignatureConfig
+
+Settings for the [RFC 9421 signature](api.md#roots-response-signature) over the
+`GET /v1/roots` response. This object has `deny_unknown_fields`.
+
+| Field | Type | Required / default | Description |
+| --- | --- | --- | --- |
+| `ttl` | [duration](#durations) | default `1h` | Lifetime of each signed roots artifact (`expires = created + ttl`). The server re-signs before expiry; clients reject a signature once `now >= expires`. Shorter values narrow the replay window at the cost of more frequent signing (the CA key may be AWS KMS); signatures are cached in [storage](storage.md) for the lifetime, so a short `ttl` mainly increases re-signing frequency, not per-request cost. |
+
+```json
+{
+  "roots_signature": { "ttl": "1h" }
 }
 ```
 
