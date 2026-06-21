@@ -740,6 +740,16 @@ Decisions locked:
   reference `x5u`+`x5t` with a new unsigned `GET /v1/roots/signer-chain` PEM
   endpoint, to avoid response-header size limits. Client gains a same-origin
   signer-chain fetch and an `x5t` leaf-binding step (now an 8-step routine).
+- 2026-06-22: De-duplicated signature verification into a new
+  `ayane-protocol::crypto` (`verify_x509_signature` for DER ECDSA / RSA PKCS#1 by
+  OID, and `verify_rfc9421_signature` for raw P1363 / RSA by `alg` token, sharing
+  one internal RSA helper and a `SignatureError`). The server's
+  `crypto::verify_signature` and the CLI's cert-link / RFC 9421 checks now both
+  delegate to it; the duplicated dispatch and RSA helpers were removed (and the
+  CLI's now-unused `digest` dependency dropped). `ayane-protocol` gains the
+  RustCrypto verification deps. (Considered `rustls-webpki` but it validates an
+  end-entity TLS leaf — it rejects a CA-as-leaf and requires an EKU, and would not
+  express signer-level cross-signing — so it is the wrong tool here.)
 - 2026-06-22: Hardened client anchoring after a security review. Replaced the
   linear `windows(2)` chain walk — which wrongly rejected any served bag
   containing a cross-signed/cross-root cert — with a real path build (issuer by

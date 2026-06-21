@@ -861,7 +861,6 @@ dependencies = [
  "clap",
  "const-oid 0.9.6",
  "der",
- "digest 0.10.7",
  "hex",
  "humantime",
  "jsonwebtoken",
@@ -886,8 +885,16 @@ name = "ayane-protocol"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "const-oid 0.9.6",
+ "digest 0.10.7",
+ "p256",
+ "p384",
+ "rsa",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "signature",
+ "spki",
 ]
 
 [[package]]

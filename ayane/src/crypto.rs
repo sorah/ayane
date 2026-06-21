@@ -153,50 +153,18 @@ pub fn verify_signature(
     sig: &[u8],
     alg_oid: const_oid::ObjectIdentifier,
 ) -> crate::error::Result<()> {
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-
-    let invalid = |e: &dyn std::fmt::Display| {
-        crate::error::Error::Forbidden(format!("signature verification failed: {e}"))
-    };
-
-    if alg_oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256 {
-        let vk =
-            p256::ecdsa::VerifyingKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
-        let signature = p256::ecdsa::Signature::from_der(sig).map_err(|e| invalid(&e))?;
-        vk.verify(tbs, &signature).map_err(|e| invalid(&e))
-    } else if alg_oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_384 {
-        let vk =
-            p384::ecdsa::VerifyingKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
-        let signature = p384::ecdsa::Signature::from_der(sig).map_err(|e| invalid(&e))?;
-        vk.verify(tbs, &signature).map_err(|e| invalid(&e))
-    } else if alg_oid == const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha256>(spki_der, tbs, sig)
-    } else if alg_oid == const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha384>(spki_der, tbs, sig)
-    } else if alg_oid == const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha512>(spki_der, tbs, sig)
-    } else {
-        Err(crate::error::Error::BadRequest(format!(
-            "unsupported signature algorithm: {alg_oid}"
-        )))
-    }
-}
-
-fn verify_rsa<D>(spki_der: &[u8], tbs: &[u8], sig: &[u8]) -> crate::error::Result<()>
-where
-    D: digest::Digest + const_oid::AssociatedOid,
-{
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-
-    let invalid = |e: &dyn std::fmt::Display| {
-        crate::error::Error::Forbidden(format!("signature verification failed: {e}"))
-    };
-    let pubkey = rsa::RsaPublicKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
-    let vk = rsa::pkcs1v15::VerifyingKey::<D>::new(pubkey);
-    let signature = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| invalid(&e))?;
-    vk.verify(tbs, &signature).map_err(|e| invalid(&e))
+    ayane_protocol::crypto::verify_x509_signature(spki_der, tbs, sig, alg_oid).map_err(
+        |e| match e {
+            // A signature over a CSR/cert that does not validate is a caller error
+            // (forbidden); an unsupported algorithm is a bad request.
+            ayane_protocol::crypto::SignatureError::Invalid(_) => {
+                crate::error::Error::Forbidden(e.to_string())
+            }
+            ayane_protocol::crypto::SignatureError::Unsupported(_) => {
+                crate::error::Error::BadRequest(e.to_string())
+            }
+        },
+    )
 }
 
 #[cfg(test)]

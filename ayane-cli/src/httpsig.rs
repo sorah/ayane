@@ -254,73 +254,23 @@ fn verify_rfc9421_signature(
     msg: &[u8],
     raw: &[u8],
 ) -> anyhow::Result<()> {
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-
-    let bad = |e: &dyn std::fmt::Display| anyhow::anyhow!("roots signature is invalid: {e}");
-    match alg {
-        "ecdsa-p256-sha256" => {
-            let vk = p256::ecdsa::VerifyingKey::from_public_key_der(spki_der)?;
-            let sig = p256::ecdsa::Signature::from_slice(raw).map_err(|e| bad(&e))?;
-            vk.verify(msg, &sig).map_err(|e| bad(&e))
-        }
-        "ecdsa-p384-sha384" => {
-            let vk = p384::ecdsa::VerifyingKey::from_public_key_der(spki_der)?;
-            let sig = p384::ecdsa::Signature::from_slice(raw).map_err(|e| bad(&e))?;
-            vk.verify(msg, &sig).map_err(|e| bad(&e))
-        }
-        "rsa-v1_5-sha256" => verify_rsa::<sha2::Sha256>(spki_der, msg, raw),
-        "rsa-v1_5-sha384" => verify_rsa::<sha2::Sha384>(spki_der, msg, raw),
-        "rsa-v1_5-sha512" => verify_rsa::<sha2::Sha512>(spki_der, msg, raw),
-        other => anyhow::bail!("unsupported roots signature algorithm {other:?}"),
-    }
-}
-
-fn verify_rsa<D>(spki_der: &[u8], msg: &[u8], raw: &[u8]) -> anyhow::Result<()>
-where
-    D: digest::Digest + const_oid::AssociatedOid,
-{
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-    let pubkey = rsa::RsaPublicKey::from_public_key_der(spki_der)?;
-    let vk = rsa::pkcs1v15::VerifyingKey::<D>::new(pubkey);
-    let sig = rsa::pkcs1v15::Signature::try_from(raw)
-        .map_err(|e| anyhow::anyhow!("roots signature is invalid: {e}"))?;
-    vk.verify(msg, &sig)
+    ayane_protocol::crypto::verify_rfc9421_signature(alg, spki_der, msg, raw)
         .map_err(|e| anyhow::anyhow!("roots signature is invalid: {e}"))
 }
 
-/// Verify that `cert`'s X.509 signature validates under `parent_spki_der`,
-/// dispatching on the certificate's `signatureAlgorithm` (DER ECDSA / PKCS#1).
+/// Verify that `cert`'s X.509 signature validates under `parent_spki_der`.
 fn verify_x509_signature(
     cert: &x509_cert::Certificate,
     parent_spki_der: &[u8],
 ) -> anyhow::Result<()> {
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-
     let tbs = cert.tbs_certificate.to_der()?;
-    let sig = cert.signature.raw_bytes();
-    let oid = cert.signature_algorithm.oid;
-    let bad = |e: &dyn std::fmt::Display| anyhow::anyhow!("signature verification failed: {e}");
-
-    if oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256 {
-        let vk = p256::ecdsa::VerifyingKey::from_public_key_der(parent_spki_der)?;
-        let sig = p256::ecdsa::Signature::from_der(sig).map_err(|e| bad(&e))?;
-        vk.verify(&tbs, &sig).map_err(|e| bad(&e))
-    } else if oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_384 {
-        let vk = p384::ecdsa::VerifyingKey::from_public_key_der(parent_spki_der)?;
-        let sig = p384::ecdsa::Signature::from_der(sig).map_err(|e| bad(&e))?;
-        vk.verify(&tbs, &sig).map_err(|e| bad(&e))
-    } else if oid == const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha256>(parent_spki_der, &tbs, sig)
-    } else if oid == const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha384>(parent_spki_der, &tbs, sig)
-    } else if oid == const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha512>(parent_spki_der, &tbs, sig)
-    } else {
-        anyhow::bail!("unsupported certificate signature algorithm: {oid}")
-    }
+    ayane_protocol::crypto::verify_x509_signature(
+        parent_spki_der,
+        &tbs,
+        cert.signature.raw_bytes(),
+        cert.signature_algorithm.oid,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Parse every `CERTIFICATE` block from a PEM bundle into DER certificates.

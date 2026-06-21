@@ -11,3 +11,13 @@ description = "Shared wire protocol definitions for the ayane certificate author
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
+
+# Shared X.509 / RFC 9421 signature verification (RustCrypto 0.7-generation).
+const-oid = { workspace = true }
+spki = { workspace = true }
+p256 = { workspace = true }
+p384 = { workspace = true }
+rsa = { workspace = true }
+sha2 = { workspace = true }
+signature = { workspace = true }
+digest = { workspace = true }
