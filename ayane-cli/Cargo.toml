@@ -31,6 +31,7 @@ p256 = { workspace = true }
 p384 = { workspace = true }
 rsa = { workspace = true }
 sha2 = { workspace = true }
+digest = { workspace = true }
 signature = { workspace = true }
 pem = { workspace = true }
 base64 = { workspace = true }

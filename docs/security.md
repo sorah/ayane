@@ -18,7 +18,7 @@ TLS is always terminated *in front of* ayane. The server core in `ayane/src/http
 
 ## Authentication and authorization per endpoint
 
-The read endpoints (`GET /v1/health`, `GET /v1/roots`, `GET /v1/provisioners`) are unauthenticated and return only public information. The four mutating endpoints each require a distinct credential.
+The read endpoints (`GET /v1/health`, `GET /v1/roots`, `GET /v1/roots/signer-chain`, `GET /v1/provisioners`) require no request authentication and return only public information. The `GET /v1/roots` *response* is nonetheless signed by the CA key so clients can authenticate the trust bundle independently of TLS — see [Roots-response signature](#roots-response-signature). The four mutating endpoints each require a distinct credential.
 
 | Endpoint | Credential | What it proves |
 | --- | --- | --- |
@@ -28,6 +28,18 @@ The read endpoints (`GET /v1/health`, `GET /v1/roots`, `GET /v1/provisioners`) a
 | `POST /v1/revoke` | OTT JWT *or* `DPoP` + certificate | Provisioner authority *or* possession of the cert key |
 
 See [the API reference](api.md) for the full request/response shapes.
+
+## Roots-response signature
+
+`GET /v1/roots` distributes the PKI's trust anchors, so its response *is* trust-bearing. Because ayane runs behind a third-party TLS terminator (a Lambda Function URL serves an Amazon-issued certificate), TLS alone does not prove a `roots` response came from this PKI: anyone able to present a valid serving certificate for the host — or who controls the fronting infrastructure — could substitute a malicious bundle. To close this, the response carries an [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421) HTTP Message Signature produced with the **CA issuing key** (the anchor clients already pin), independent of the TLS layer.
+
+**What is signed.** The covered components are `("@status" "content-type" "content-digest" "signature-key")`. `Content-Digest` ([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530)) binds the exact body, so the returned roots cannot be altered in flight. `Signature-Key` ([draft-hardt-httpbis-signature-key](https://datatracker.ietf.org/doc/draft-hardt-httpbis-signature-key/), `x509` scheme) carries `x5u` (a reference to the signer chain at `GET /v1/roots/signer-chain`) and `x5t` (the signer leaf's SHA-256 thumbprint); both are covered, so they cannot be altered without invalidating the signature. `created`/`expires` bound replay (default lifetime 1h, [`ca.roots_signature.ttl`](configuration.md#rootssignatureconfig)).
+
+**Client verification** (`ayane roots --root`, fail-closed). The client recomputes the body digest; checks `expires`/`created` freshness (60 s skew); fetches the signer chain from `x5u` (constrained to the request origin — a tampered `x5u` cannot redirect the fetch elsewhere); binds the fetched leaf to the signed `x5t`; verifies the signature with the leaf's public key; and finally **anchors** the signer chain to the certificates in the pinned `--root` bundle (each link signature-verified, the top byte-equal to or issued by a pinned root). Trust is anchored in the *pinned* bundle, never in the response.
+
+**Why fetching the chain over untrusted TLS is safe.** The signer leaf is pinned by the signed `x5t`, so a substituted leaf is rejected; substituted intermediates fail link verification or anchoring. The signer chain (`/v1/roots/signer-chain`) is therefore served unsigned. Signatures are memoized in [storage](storage.md) keyed by a hash of the body, so a roots/config change re-signs automatically and the CA key (possibly KMS) is not invoked per request.
+
+**Scope.** The client performs issuer/signature-linkage path validation up to the pinned anchor; full RFC 5280 validation of the signer chain (name constraints, EKU, signer revocation) is out of scope — the signer is the operator's own pinned CA. Establishing the initial `--root` is an out-of-band step (shipped with the host).
 
 ## OTT issuance tokens
 

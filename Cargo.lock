@@ -861,6 +861,7 @@ dependencies = [
  "clap",
  "const-oid 0.9.6",
  "der",
+ "digest 0.10.7",
  "hex",
  "humantime",
  "jsonwebtoken",

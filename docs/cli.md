@@ -230,19 +230,23 @@ ayane revoke \
 
 ## roots
 
-Fetches the CA's root certificate(s) from `GET /v1/roots` and prints them as PEM to stdout. Use this to bootstrap a trust store.
+Fetches the CA's root certificate(s) from `GET /v1/roots`, **verifies the response's CA signature against a pinned trusted root bundle**, and prints the roots as PEM to stdout.
+
+`--root` is **required**: the `GET /v1/roots` response is signed by the CA key (RFC 9421; see [the API reference](api.md#roots-response-signature)), and that signature is verified against the certificates in `--root`. This defends against a third party in the TLS path (e.g. a Lambda Function URL's Amazon-issued serving certificate) substituting a malicious root bundle. Verification is fail-closed — on any mismatch the command prints nothing and exits non-zero.
 
 | Flag | Required / default | Description |
 | --- | --- | --- |
 | `--url <URL>` | required | CA base URL. |
-| `--root <PATH>` | optional | Trust this PEM root for the TLS connection. |
-| `--insecure` | optional flag | Skip TLS verification. |
+| `--root <PATH>` | **required** | Pinned trusted root bundle (PEM). Used both as the TLS trust anchor and as the anchor the response signature is verified against. |
+| `--insecure` | optional flag | Skip **TLS** verification (testing only). Does **not** bypass the response-signature check. |
 
 ```bash
-ayane roots --url https://ca.example > ca-roots.pem
+ayane roots --url https://ca.example --root /etc/ayane/known-roots.pem > ca-roots.pem
 ```
 
-When bootstrapping against a CA whose own serving certificate is not yet trusted, `--root` or `--insecure` lets the connection succeed so you can retrieve the roots.
+The command fetches the signer certificate chain referenced by the response (from `GET /v1/roots/signer-chain`, on the same origin as `--url`), binds its leaf to the signed thumbprint, verifies the signature, and confirms the signer chains up to a certificate in `--root`. The printed roots are the bundle conveyed in the verified response — so `--root` can hold a long-lived pinned anchor while the command discovers new or rotated roots that chain up to it.
+
+Establish the initial `--root` out of band (ship it with the host image or configuration management), exactly as `machineidentity` seeds its `roots.pem`.
 
 ## health
 
