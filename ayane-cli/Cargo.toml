@@ -36,5 +36,6 @@ pem = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+humantime = { workspace = true }
 
 jsonwebtoken = { workspace = true }

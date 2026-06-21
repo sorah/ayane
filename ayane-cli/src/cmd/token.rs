@@ -36,7 +36,7 @@ pub fn run(args: TokenArgs) -> anyhow::Result<()> {
         (None, Some(url)) => format!("{}/v1/{}", url.trim_end_matches('/'), args.operation),
         (None, None) => anyhow::bail!("provide --audience or --url"),
     };
-    let validity = parse_duration_secs(&args.validity)?;
+    let validity = humantime::parse_duration(&args.validity)?.as_secs() as i64;
     let token = crate::proof::make_ott(
         &key,
         &args.issuer,
@@ -47,20 +47,4 @@ pub fn run(args: TokenArgs) -> anyhow::Result<()> {
     )?;
     println!("{token}");
     Ok(())
-}
-
-fn parse_duration_secs(s: &str) -> anyhow::Result<i64> {
-    let split = s
-        .find(|c: char| c.is_ascii_alphabetic())
-        .ok_or_else(|| anyhow::anyhow!("duration {s:?} missing unit"))?;
-    let (num, unit) = s.split_at(split);
-    let value: i64 = num.parse()?;
-    let secs = match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3600,
-        "d" => value * 86_400,
-        other => anyhow::bail!("unknown duration unit {other:?}"),
-    };
-    Ok(secs)
 }

@@ -101,6 +101,8 @@ ayane renew \
 
 The CLI reads the certificate and key, mints a DPoP proof bound to `POST https://ca.example/v1/renew`, and writes the renewed fullchain (leaf followed by the issuer chain) to `--out`. The same `--root <ca.pem>` and `--insecure` connection flags available on every command apply (see [cli](cli.md)).
 
+To keep a long-lived host's certificate fresh automatically, add `--loop`: the command stays running, renews before a configurable fraction of the lifetime elapses (with jitter), and can run a post-renewal hook via `--exec`. See [continuous renewal](cli.md#continuous-renewal---loop) for the full flag set, signal handling (`SIGHUP` renews now), and failure/backoff behavior.
+
 ## Rekey — `POST /v1/rekey`
 
 Rekey is renewal onto a **new key pair**. The DPoP proof still proves possession of the *existing* certificate's key, while the new public key is taken from a fresh CSR.

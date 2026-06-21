@@ -122,9 +122,9 @@ Renews an existing certificate **with the same key**. The command reads the curr
 | `--insecure` | optional flag | Skip TLS verification (connection flag). |
 | `--cert <PATH>` | required | Existing certificate PEM (leaf, or a fullchain — the leaf is used). |
 | `--key <PATH>` | required | Existing private key PEM (signs the DPoP proof). |
-| `--out <PATH>` | required | Where to write the renewed certificate (fullchain). |
+| `--out <PATH>` | required (one-shot); defaults to `--cert` under `--loop` | Where to write the renewed certificate (fullchain). |
 
-The renewed certificate is written to `--out`; the existing key is reused, so there is no `--key-out`. The command prints `renewed serial <n>` to stderr.
+The renewed certificate is written to `--out` (atomically: a sibling temp file is renamed into place, preserving the target's existing permissions); the existing key is reused, so there is no `--key-out`. The command prints `renewed serial <n>` to stderr.
 
 ```bash
 ayane renew \
@@ -132,6 +132,33 @@ ayane renew \
   --cert web.fullchain.pem \
   --key web.key.pem \
   --out web.renewed.pem
+```
+
+### Continuous renewal (`--loop`)
+
+With `--loop`, `renew` does not exit after one renewal: it keeps the certificate fresh for the life of the process. It computes a renewal time from the certificate's validity window, sleeps until then, renews, runs an optional hook, and repeats. Run it under a process supervisor (e.g. systemd with `Restart=always`). It runs in the foreground — it is **not** a forking daemon; the supervisor owns lifecycle and logging.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--loop` | off | Renew continuously instead of once. |
+| `--renew-fraction <F>` | `0.66` | Renew once the certificate has passed fraction `F` (0–1, exclusive) of its validity window. Mutually exclusive with `--renew-before`. |
+| `--renew-before <DUR>` | — | Renew when remaining validity drops below `DUR` (e.g. `8h`), instead of a fraction. |
+| `--jitter <DUR>` | `5m` | Maximum random jitter subtracted from the renewal time, to spread a fleet's renewals. |
+| `--max-sleep <DUR>` | `1h` | Cap on a single sleep before re-reading the certificate and recomputing the schedule. |
+| `--exec <CMD>` | — | Shell command run via `sh -c` after each successful renewal. A non-zero exit is logged and does not stop the loop. |
+
+Durations are parsed by [`humantime`](https://docs.rs/humantime) — `30s`, `5m`, `8h`, `1d`, `1w`, and compound forms like `1h30m`. Because renewal preserves the original certificate's lifetime, the cadence stays stable across renewals.
+
+Signals: `SIGHUP` renews immediately (regardless of the schedule); `SIGTERM`/`SIGINT` stop the loop and exit `0`. Transient failures (network, `5xx`, `429`) are retried with exponential backoff and jitter; terminal failures (a revoked or already-expired certificate, bad arguments) exit non-zero so the supervisor — and, where configured, a fresh bootstrap — can take over. An **expired** certificate cannot be renewed, so the loop's job is to renew well before expiry.
+
+```bash
+ayane renew --loop \
+  --url https://ca.example \
+  --root /etc/ssl/roots.pem \
+  --cert /var/lib/identity/identity.crt \
+  --key  /var/lib/identity/key.pem \
+  --exec /usr/local/bin/reload-services
+# --out defaults to --cert (renew in place); --renew-fraction 0.66, --jitter 5m
 ```
 
 ## rekey
