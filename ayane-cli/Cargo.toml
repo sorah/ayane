@@ -18,7 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 reqwest = { workspace = true }
 clap = { workspace = true }
 

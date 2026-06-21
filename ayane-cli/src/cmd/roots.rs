@@ -9,7 +9,7 @@ pub async fn run(args: crate::cmd::UrlArgs) -> anyhow::Result<()> {
     let root = args.root.clone().ok_or_else(|| {
         anyhow::anyhow!("--root is required: the roots response signature is verified against it")
     })?;
-    let known_roots = std::fs::read(&root)?;
+    let known_roots = tokio::fs::read(&root).await?;
 
     let client = crate::cmd::http_client(&args)?;
     let roots_url = crate::cmd::endpoint(&args.url, "/v1/roots");
