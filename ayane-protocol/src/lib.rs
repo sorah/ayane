@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod dpop;
+pub mod httpsig;
 pub mod problem;
 pub mod token;
 
