@@ -100,11 +100,11 @@ Settings for the [RFC 9421 signature](api.md#roots-response-signature) over the
 
 | Field | Type | Required / default | Description |
 | --- | --- | --- | --- |
-| `ttl` | [duration](#durations) | default `1h` | Lifetime of each signed roots artifact (`expires = created + ttl`). The server re-signs before expiry; clients reject a signature once `now >= expires`. Shorter values narrow the replay window at the cost of more frequent signing (the CA key may be AWS KMS); signatures are cached in [storage](storage.md) for the lifetime, so a short `ttl` mainly increases re-signing frequency, not per-request cost. |
+| `ttl` | [duration](#durations) | default `24h` | Lifetime of each signed roots artifact (`expires = created + ttl`). The server re-signs before expiry; clients reject a signature once `now >= expires`. Shorter values narrow the replay window at the cost of more frequent signing (the CA key may be AWS KMS); signatures are cached in [storage](storage.md) for the lifetime, so a short `ttl` mainly increases re-signing frequency, not per-request cost. |
 
 ```json
 {
-  "roots_signature": { "ttl": "1h" }
+  "roots_signature": { "ttl": "24h" }
 }
 ```
 

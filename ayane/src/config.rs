@@ -120,7 +120,7 @@ impl Default for RootsSignatureConfig {
 }
 
 fn default_roots_signature_ttl() -> crate::duration::ConfigDuration {
-    crate::duration::ConfigDuration(std::time::Duration::from_secs(3600))
+    crate::duration::ConfigDuration(std::time::Duration::from_secs(24 * 3600))
 }
 
 /// Signing-key backend.

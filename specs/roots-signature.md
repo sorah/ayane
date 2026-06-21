@@ -218,14 +218,14 @@ A new optional block under `ca` controls the signature lifetime:
     "key": { "type": "aws_kms", "key_id": "alias/ayane", "algorithm": "ECDSA_SHA256" },
     "chain": [ { "file": "intermediate.crt" } ],
     "roots": [ { "file": "root.crt" } ],
-    "roots_signature": { "ttl": "1h" }
+    "roots_signature": { "ttl": "24h" }
   }
 }
 ```
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `ca.roots_signature.ttl` | duration | `1h` | Lifetime of each signed roots artifact: `expires = created + ttl`. The server re-signs before expiry (see Implementation Plan); clients reject once `now >= expires`. |
+| `ca.roots_signature.ttl` | duration | `24h` | Lifetime of each signed roots artifact: `expires = created + ttl`. The server re-signs before expiry (see Implementation Plan); clients reject once `now >= expires`. |
 
 No new server flags. The signer chain is the already-configured `ca.chain`
 (falling back to the issuing certificate when `chain` is empty), so a single-tier
@@ -340,7 +340,7 @@ entry for the key.
   tampering with the returned roots independent of the chain.
 - **Replay bounding** via `created`/`expires`. The client enforces
   `now < expires` and a 60 s future-skew cap on `created`. `ttl` trades
-  signing cost against replay window; default `1h`.
+  signing cost against replay window; default `24h`.
 - **Algorithm pinning.** `alg` is taken from the CA key on the server and, on the
   client, the verifier dispatches on the `alg` token but the *key type* is fixed
   by the signer certificate's SPKI — there is no negotiation and no `alg=none`
@@ -528,7 +528,7 @@ table, the DynamoDB `cache:<key>` item with `exp`/`ttl`, and the contract rows.
 **`config.rs`**:
 - `CaConfig` gains `#[serde(default)] pub roots_signature: RootsSignatureConfig`.
 - `RootsSignatureConfig { #[serde(default = default_roots_sig_ttl)] ttl: ConfigDuration }`,
-  default `1h`. `#[serde(deny_unknown_fields)]`. Plumb the value through
+  default `24h`. `#[serde(deny_unknown_fields)]`. Plumb the value through
   `builder.rs` into the `Service`.
 
 **`service.rs`** (`Service` gains `roots_signature_ttl` and `external_url`
@@ -696,7 +696,7 @@ Decisions locked:
 - **ECDSA signature encoding:** RFC 9421 P1363 `r‖s` (converted from the CA's
   X.509 DER signature).
 - **Caching:** memoized in `Storage` (new expiring KV), keyed by body hash;
-  default `ttl = 1h`; server refreshes before expiry (`refresh_margin =
+  default `ttl = 24h`; server refreshes before expiry (`refresh_margin =
   min(ttl/4, 5m)`); client skew leeway `60s`.
 - **Out of scope:** full RFC 5280 path validation of the signer chain; signing
   any other endpoint; a general RFC 9421 engine; `x5u`; `rsa-pss`.
@@ -715,6 +715,7 @@ Decisions locked:
   reference `x5u`+`x5t` with a new unsigned `GET /v1/roots/signer-chain` PEM
   endpoint, to avoid response-header size limits. Client gains a same-origin
   signer-chain fetch and an `x5t` leaf-binding step (now an 8-step routine).
+- 2026-06-22: Default `ca.roots_signature.ttl` set to `24h` (was `1h`).
 - 2026-06-22: Implemented all three commits. `ayane-protocol::httpsig` shared
   builder; storage cache (SQLite `cache` table, DynamoDB `cache:<key>` with
   `exp`/`ttl`); server `signed_roots` (cached) + `roots` / `roots/signer-chain`

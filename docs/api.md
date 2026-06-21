@@ -156,7 +156,7 @@ fixed covered-component set:
 | --- | --- |
 | `Content-Digest` | [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530) `sha-256` of the exact response body, binding the returned roots into the signature. |
 | `Signature-Key` | [draft-hardt-httpbis-signature-key](https://datatracker.ietf.org/doc/draft-hardt-httpbis-signature-key/) `x509` scheme: `x5u` references the signer chain at [`/v1/roots/signer-chain`](#get-v1rootssigner-chain) and `x5t` is the base64url SHA-256 thumbprint of the signer (issuing) certificate. Both are covered by the signature. |
-| `Signature-Input` | The covered set plus `created`, `expires` (the signature lifetime; default 1h, see [configuration](configuration.md)), and `alg` (the RFC 9421 algorithm token of the CA key, e.g. `ecdsa-p256-sha256`). |
+| `Signature-Input` | The covered set plus `created`, `expires` (the signature lifetime; default 24h, see [configuration](configuration.md)), and `alg` (the RFC 9421 algorithm token of the CA key, e.g. `ecdsa-p256-sha256`). |
 | `Signature` | The signature value. ECDSA uses the RFC 9421 fixed-width `r‖s` encoding. |
 
 Signatures are computed with a configurable lifetime and cached server-side

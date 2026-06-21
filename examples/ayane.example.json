@@ -8,7 +8,7 @@
       "region": "us-east-1"
     },
     "roots": [{ "file": "ca/root.crt" }],
-    "roots_signature": { "ttl": "1h" }
+    "roots_signature": { "ttl": "24h" }
   },
 
   "provisioners": [
