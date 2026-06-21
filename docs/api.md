@@ -124,7 +124,7 @@ curl https://ca.example/v1/roots
 
 ```http
 Content-Type: application/json
-Content-Digest: sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:
+Content-Digest: sha-384=:fNH2k...base64 SHA-384 of the body...:
 Signature-Key: sig=x509;x5u="/v1/roots/signer-chain";x5t="bWcoon4QTVn8Q6xiY0ekMD6L8bNLMkuDV2KtvsFc1nM"
 Signature-Input: sig=("@status" "content-type" "content-digest" "signature-key");created=1718360000;expires=1718363600;alg="ecdsa-p256-sha256"
 Signature: sig=:MEUCIQ...:
@@ -154,7 +154,7 @@ fixed covered-component set:
 
 | Header | Purpose |
 | --- | --- |
-| `Content-Digest` | [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530) `sha-256` of the exact response body, binding the returned roots into the signature. |
+| `Content-Digest` | [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530)-format `sha-384` of the exact response body, binding the returned roots into the signature. (`sha-384` is an ayane-private choice — RFC 9530 registers only `sha-256`/`sha-512` — safe because the only verifier is `ayane-cli`.) |
 | `Signature-Key` | [draft-hardt-httpbis-signature-key](https://datatracker.ietf.org/doc/draft-hardt-httpbis-signature-key/) `x509` scheme: `x5u` references the signer chain at [`/v1/roots/signer-chain`](#get-v1rootssigner-chain) and `x5t` is the base64url SHA-256 thumbprint of the signer (issuing) certificate. Both are covered by the signature. |
 | `Signature-Input` | The covered set plus `created`, `expires` (the signature lifetime; default 24h, see [configuration](configuration.md)), and `alg` (the RFC 9421 algorithm token of the CA key, e.g. `ecdsa-p256-sha256`). |
 | `Signature` | The signature value. ECDSA uses the RFC 9421 fixed-width `r‖s` encoding. |

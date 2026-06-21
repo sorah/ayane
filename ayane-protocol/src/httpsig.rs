@@ -64,29 +64,34 @@ pub struct RootsSigParams {
     pub alg: String,
 }
 
-/// `sha-256=:<base64(digest)>:` (RFC 9530) from a 32-byte SHA-256 digest.
-pub fn content_digest_header(sha256: &[u8; 32]) -> String {
+/// `sha-384=:<base64(digest)>:` (RFC 9530 format) from a 48-byte SHA-384 digest.
+///
+/// `sha-384` is not a registered Content-Digest algorithm (RFC 9530 registers
+/// `sha-256` and `sha-512`); it is an ayane-private choice, safe because the only
+/// verifier is `ayane-cli`. It matches the digest strength of the SHA-384 signing
+/// algorithms.
+pub fn content_digest_header(sha384: &[u8; 48]) -> String {
     use base64::Engine;
     format!(
-        "sha-256=:{}:",
-        base64::engine::general_purpose::STANDARD.encode(sha256)
+        "sha-384=:{}:",
+        base64::engine::general_purpose::STANDARD.encode(sha384)
     )
 }
 
-/// Parse the SHA-256 digest out of a `sha-256=:…:` value.
-pub fn parse_content_digest(value: &str) -> Result<[u8; 32], HttpSigError> {
+/// Parse the SHA-384 digest out of a `sha-384=:…:` value.
+pub fn parse_content_digest(value: &str) -> Result<[u8; 48], HttpSigError> {
     let inner = value
         .trim()
-        .strip_prefix("sha-256=:")
+        .strip_prefix("sha-384=:")
         .and_then(|v| v.strip_suffix(':'))
-        .ok_or_else(|| err("Content-Digest is not a single sha-256 byte sequence"))?;
+        .ok_or_else(|| err("Content-Digest is not a single sha-384 byte sequence"))?;
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(inner)
         .map_err(|e| err(format!("Content-Digest base64: {e}")))?;
     bytes
         .try_into()
-        .map_err(|_| err("Content-Digest is not 32 bytes"))
+        .map_err(|_| err("Content-Digest is not 48 bytes"))
 }
 
 /// `BASE64URL_NOPAD(digest)` — the `x5t` thumbprint, from a precomputed SHA-256
@@ -269,7 +274,7 @@ mod tests {
 
     #[test]
     fn signature_base_is_exact() {
-        let digest = super::content_digest_header(&[0u8; 32]);
+        let digest = super::content_digest_header(&[0u8; 48]);
         let key = super::signature_key_x509("/v1/roots/signer-chain", "thumb");
         let base = super::roots_signature_base(200, "application/json", &digest, &key, &params());
         let expected = format!(
@@ -281,7 +286,7 @@ mod tests {
 
     #[test]
     fn content_digest_roundtrip() {
-        let d = [7u8; 32];
+        let d = [7u8; 48];
         let header = super::content_digest_header(&d);
         assert_eq!(super::parse_content_digest(&header).unwrap(), d);
     }

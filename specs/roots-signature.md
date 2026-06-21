@@ -64,7 +64,7 @@ RFC 9421 signature over the response:
 ```
 HTTP/1.1 200 OK
 Content-Type: application/json
-Content-Digest: sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:
+Content-Digest: sha-384=:fNH2k...base64 SHA-384 of the body...:
 Signature-Key: sig=x509;x5u="/v1/roots/signer-chain";x5t="bWcoon4QTVn8Q6xiY0ekMD6L8bNLMkuDV2KtvsFc1nM"
 Signature-Input: sig=("@status" "content-type" "content-digest" "signature-key");created=1718360000;expires=1718363600;alg="ecdsa-p256-sha256"
 Signature: sig=:MEUCIQ…rawECDSA(r‖s)…:
@@ -72,8 +72,10 @@ Signature: sig=:MEUCIQ…rawECDSA(r‖s)…:
 {"certificates":["-----BEGIN CERTIFICATE-----\n…root…\n-----END CERTIFICATE-----\n"]}
 ```
 
-- **`Content-Digest`** (RFC 9530) carries `sha-256=:BASE64(SHA256(body)):`,
-  binding the exact response bytes into the signature.
+- **`Content-Digest`** (RFC 9530 format) carries `sha-384=:BASE64(SHA384(body)):`,
+  binding the exact response bytes into the signature. `sha-384` is an
+  ayane-private digest choice (RFC 9530 registers only `sha-256`/`sha-512`), safe
+  because the only verifier is `ayane-cli`, and matches the SHA-384 signing tier.
 - **`Signature-Key`** ([draft-hardt-httpbis-signature-key], `x509` scheme)
   **references** the signer certificate chain rather than inlining it:
   - **`x5u`** — URL of the signer chain (PEM), served at
@@ -126,7 +128,7 @@ numeric status; the component values are the exact header values sent):
 ```
 "@status": 200
 "content-type": application/json
-"content-digest": sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:
+"content-digest": sha-384=:fNH2k...base64 SHA-384 of the body...:
 "signature-key": sig=x509;x5u="/v1/roots/signer-chain";x5t="bWcoon4QTVn8Q6xiY0ekMD6L8bNLMkuDV2KtvsFc1nM"
 "@signature-params": ("@status" "content-type" "content-digest" "signature-key");created=1718360000;expires=1718363600;alg="ecdsa-p256-sha256"
 ```
@@ -171,7 +173,7 @@ prints nothing and exits non-zero):
 
 1. Read the raw response **bytes** (before JSON parsing) and all four headers;
    any missing header → reject.
-2. Recompute `SHA256(body)` and compare to `Content-Digest`; mismatch → reject.
+2. Recompute `SHA384(body)` and compare to `Content-Digest`; mismatch → reject.
 3. Parse `Signature-Input` parameters; require `now < expires` and
    `created <= now + 60s` (clock-skew leeway, matching the OTT/DPoP 60s
    convention); stale or future-dated → reject.
@@ -306,7 +308,8 @@ entry for the key.
 
 - **RFC 9421** — HTTP Message Signatures (signature base, `Signature` /
   `Signature-Input`, `@signature-params`, algorithm tokens).
-- **RFC 9530** — Digest Fields (`Content-Digest`, `sha-256=:…:`).
+- **RFC 9530** — Digest Fields (`Content-Digest` format; ayane uses a
+  `sha-384=:…:` value).
 - **draft-hardt-httpbis-signature-key** — `Signature-Key` field and its `x509`
   scheme (`x5u`/`x5t`), used as defined.
 - **RFC 8555 (ACME)** — `application/pem-certificate-chain` media type, reused for
@@ -413,10 +416,10 @@ pub const ROOTS_SIGNATURE_LABEL: &str = "sig";
 pub const SIGNER_CHAIN_PATH: &str = "/v1/roots/signer-chain";
 pub const PEM_CHAIN_MEDIA_TYPE: &str = "application/pem-certificate-chain";
 
-/// `sha-256=:<base64(digest)>:` from a 32-byte SHA-256 digest.
-pub fn content_digest_header(sha256: &[u8; 32]) -> String;
-/// Parse the base64 digest out of a `sha-256=:…:` value (errors on any other alg).
-pub fn parse_content_digest(value: &str) -> Result<[u8; 32], HttpSigError>;
+/// `sha-384=:<base64(digest)>:` from a 48-byte SHA-384 digest.
+pub fn content_digest_header(sha384: &[u8; 48]) -> String;
+/// Parse the base64 digest out of a `sha-384=:…:` value (errors on any other alg).
+pub fn parse_content_digest(value: &str) -> Result<[u8; 48], HttpSigError>;
 
 /// `sig=x509;x5u="<url>";x5t="<b64url thumbprint>"`.
 pub fn signature_key_x509(x5u: &str, x5t: &str) -> String;
@@ -440,7 +443,7 @@ pub fn parse_roots_sig_params(value: &str) -> Result<RootsSigParams, HttpSigErro
 pub fn roots_signature_base(
     status: u16,
     content_type: &str,
-    content_digest: &str,   // the `sha-256=:…:` header value
+    content_digest: &str,   // the `sha-384=:…:` header value
     signature_key: &str,    // the `sig=x509;x5c=(…)` header value
     p: &RootsSigParams,
 ) -> String;
@@ -548,7 +551,7 @@ fields; `ServiceParts` gains them — `external_url` from `config.server`):
   ```
   Flow:
   1. `body = serde_json::to_vec(&self.roots())`.
-  2. `digest = SHA256(body)`; `content_digest = httpsig::content_digest_header(&digest)`.
+  2. `digest = SHA384(body)`; `content_digest = httpsig::content_digest_header(&digest)`.
   3. `cache_key = format!("roots-sig:v1:{}", hex(digest))` — salted by the body so
      any roots/chain/config change misses the cache and re-signs.
   4. `cache_get::<CachedRootsSig>` → if present and
@@ -716,6 +719,11 @@ Decisions locked:
   endpoint, to avoid response-header size limits. Client gains a same-origin
   signer-chain fetch and an `x5t` leaf-binding step (now an 8-step routine).
 - 2026-06-22: Default `ca.roots_signature.ttl` set to `24h` (was `1h`).
+- 2026-06-22: `Content-Digest` over the roots body uses **SHA-384** (was
+  SHA-256), matching the SHA-384 signing tier. `sha-384` is an ayane-private
+  Content-Digest algorithm (RFC 9530 registers only `sha-256`/`sha-512`); safe as
+  the only verifier is `ayane-cli`. The `x5t` leaf thumbprint stays SHA-256 per
+  the draft.
 - 2026-06-22: Implemented all three commits. `ayane-protocol::httpsig` shared
   builder; storage cache (SQLite `cache` table, DynamoDB `cache:<key>` with
   `exp`/`ttl`); server `signed_roots` (cached) + `roots` / `roots/signer-chain`

@@ -36,7 +36,7 @@ pub(crate) fn verify_roots_response(
     now: u64,
 ) -> anyhow::Result<()> {
     // 1. Body digest must match Content-Digest.
-    let want_digest = sha256(body);
+    let want_digest = sha384(body);
     let got_digest = ayane_protocol::httpsig::parse_content_digest(&headers.content_digest)?;
     if got_digest != want_digest {
         anyhow::bail!("roots response Content-Digest does not match the body");
@@ -209,6 +209,11 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
+fn sha384(bytes: &[u8]) -> [u8; 48] {
+    use sha2::Digest;
+    sha2::Sha384::digest(bytes).into()
+}
+
 #[cfg(test)]
 mod tests {
     use der::EncodePem;
@@ -260,7 +265,7 @@ mod tests {
         expires: u64,
     ) -> super::ResponseHeaders {
         use der::Encode;
-        let content_digest = ayane_protocol::httpsig::content_digest_header(&super::sha256(body));
+        let content_digest = ayane_protocol::httpsig::content_digest_header(&super::sha384(body));
         let x5t = ayane_protocol::httpsig::x5t_from_digest(&super::sha256(&cert.to_der().unwrap()));
         let signature_key = ayane_protocol::httpsig::signature_key_x509(
             ayane_protocol::httpsig::SIGNER_CHAIN_PATH,

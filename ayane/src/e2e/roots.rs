@@ -9,10 +9,10 @@ async fn signed_roots_is_verifiable_and_cached() {
     let h = setup().await;
     let signed = h.service.signed_roots().await.expect("sign roots");
 
-    // The body is the roots JSON, and Content-Digest covers it exactly.
-    let want_digest: [u8; 32] = {
+    // The body is the roots JSON, and Content-Digest (SHA-384) covers it exactly.
+    let want_digest: [u8; 48] = {
         use sha2::Digest;
-        sha2::Sha256::digest(&signed.body).into()
+        sha2::Sha384::digest(&signed.body).into()
     };
     assert_eq!(
         ayane_protocol::httpsig::parse_content_digest(&signed.content_digest).unwrap(),

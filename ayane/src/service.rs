@@ -96,9 +96,9 @@ impl Service {
     pub async fn signed_roots(&self) -> crate::error::Result<SignedRoots> {
         let body = serde_json::to_vec(&self.roots())
             .map_err(|e| crate::error::Error::Internal(format!("serialize roots: {e}")))?;
-        let digest: [u8; 32] = {
+        let digest: [u8; 48] = {
             use sha2::Digest;
-            sha2::Sha256::digest(&body).into()
+            sha2::Sha384::digest(&body).into()
         };
         let content_digest = ayane_protocol::httpsig::content_digest_header(&digest);
         // Salt the cache key with the body so any roots/chain/config change misses
