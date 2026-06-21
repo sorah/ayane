@@ -96,8 +96,13 @@ pub(crate) fn fullchain(resp: &ayane_protocol::CertificateResponse) -> String {
 pub(crate) fn http_client(args: &UrlArgs) -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder();
     if let Some(root) = &args.root {
+        // The root bundle may carry more than one certificate — e.g. an old and
+        // a new root trusted together during a root rotation — so trust every
+        // certificate in it, not just the first.
         let pem = std::fs::read(root)?;
-        builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+        for cert in reqwest::Certificate::from_pem_bundle(&pem)? {
+            builder = builder.add_root_certificate(cert);
+        }
     }
     if args.insecure {
         builder = builder.danger_accept_invalid_certs(true);
