@@ -55,6 +55,11 @@ impl SqliteStorage {
              CREATE TABLE IF NOT EXISTS tokens (
                  jti        TEXT PRIMARY KEY,
                  expires_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS cache (
+                 key        TEXT PRIMARY KEY,
+                 value      BLOB NOT NULL,
+                 expires_at INTEGER NOT NULL
              );",
         )
         .map_err(|e| crate::error::Error::Config(format!("init sqlite schema: {e}")))?;
@@ -280,6 +285,50 @@ impl crate::storage::Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn get_cache(&self, key: &str) -> crate::error::Result<Option<Vec<u8>>> {
+        let key = key.to_string();
+        let now = unix_secs(std::time::SystemTime::now())?;
+        self.with_conn(move |conn| {
+            // Drop the entry if it has expired, then read; a single read sees a
+            // missing-or-fresh value only.
+            conn.execute(
+                "DELETE FROM cache WHERE key = ?1 AND expires_at <= ?2",
+                rusqlite::params![key, now],
+            )
+            .map_err(|e| crate::error::Error::Internal(format!("sqlite get_cache: {e}")))?;
+            conn.query_row("SELECT value FROM cache WHERE key = ?1", [key], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(crate::error::Error::Internal(format!(
+                    "sqlite get_cache: {other}"
+                ))),
+            })
+        })
+        .await
+    }
+
+    async fn set_cache(
+        &self,
+        key: &str,
+        value: Vec<u8>,
+        expires_at: std::time::SystemTime,
+    ) -> crate::error::Result<()> {
+        let key = key.to_string();
+        let expires_at = unix_secs(expires_at)?;
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO cache (key, value, expires_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![key, value, expires_at],
+            )
+            .map_err(|e| crate::error::Error::Internal(format!("sqlite set_cache: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +453,46 @@ mod tests {
         // The prior claim has expired, so re-claiming succeeds.
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
         storage.claim_token("jti-1", future).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cache_roundtrip_and_overwrite() {
+        use crate::storage::Storage;
+        let storage = super::SqliteStorage::open_in_memory().unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        assert_eq!(storage.get_cache("k").await.unwrap(), None);
+        storage
+            .set_cache("k", b"v1".to_vec(), future)
+            .await
+            .unwrap();
+        assert_eq!(storage.get_cache("k").await.unwrap(), Some(b"v1".to_vec()));
+        // A second write replaces the value.
+        storage
+            .set_cache("k", b"v2".to_vec(), future)
+            .await
+            .unwrap();
+        assert_eq!(storage.get_cache("k").await.unwrap(), Some(b"v2".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn cache_expiry_enforced_on_read() {
+        use crate::storage::Storage;
+        let storage = super::SqliteStorage::open_in_memory().unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+        storage.set_cache("k", b"v".to_vec(), past).await.unwrap();
+        // Already expired: read returns None (and drops the row).
+        assert_eq!(storage.get_cache("k").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn cache_typed_helpers_roundtrip() {
+        let storage = super::SqliteStorage::open_in_memory().unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let value = vec!["a".to_string(), "b".to_string()];
+        crate::storage::cache_set(&storage, "list", &value, future)
+            .await
+            .unwrap();
+        let got: Option<Vec<String>> = crate::storage::cache_get(&storage, "list").await.unwrap();
+        assert_eq!(got, Some(value));
     }
 }

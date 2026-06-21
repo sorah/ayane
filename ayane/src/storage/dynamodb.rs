@@ -36,6 +36,8 @@ const CERTIFICATE_SK_PREFIX: &str = "cn:";
 const REVOCATION_TYPE: &str = "revocation";
 /// Sort-key value for one-time token items.
 const TOKEN_TYPE: &str = "token";
+/// Sort-key value for general cache items.
+const CACHE_TYPE: &str = "cache";
 /// Name of the inverted GSI (partition `sk`, sort `pk`) used for listing.
 const INVERTED_INDEX: &str = "inverted";
 
@@ -79,6 +81,10 @@ impl DynamoDbStorage {
 
     fn token_pk(jti: &str) -> String {
         format!("token:{jti}")
+    }
+
+    fn cache_pk(key: &str) -> String {
+        format!("cache:{key}")
     }
 
     fn s(value: impl Into<String>) -> aws_sdk_dynamodb::types::AttributeValue {
@@ -326,6 +332,96 @@ impl crate::storage::Storage for DynamoDbStorage {
                 }
             }
         }
+    }
+
+    async fn get_cache(&self, key: &str) -> crate::error::Result<Option<Vec<u8>>> {
+        let resp = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key("pk", DynamoDbStorage::s(DynamoDbStorage::cache_pk(key)))
+            .key("sk", DynamoDbStorage::s(CACHE_TYPE))
+            .send()
+            .await
+            .map_err(|e| {
+                crate::error::Error::Internal(format!(
+                    "dynamodb GetItem(cache {key}): {}",
+                    aws_smithy_types::error::display::DisplayErrorContext(&e)
+                ))
+            })?;
+        let Some(item) = resp.item() else {
+            return Ok(None);
+        };
+        // `ttl` is padded by TTL_BUFFER for lazy reaping, so honour the real
+        // expiry (`exp`) on read rather than trusting DynamoDB's deletion timing.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| crate::error::Error::Internal(format!("clock before epoch: {e}")))?
+            .as_secs();
+        let expired = item
+            .get("exp")
+            .and_then(|v| v.as_n().ok())
+            .and_then(|n| n.parse::<u64>().ok())
+            .is_none_or(|exp| exp <= now);
+        if expired {
+            return Ok(None);
+        }
+        match item.get("value") {
+            Some(aws_sdk_dynamodb::types::AttributeValue::B(blob)) => {
+                Ok(Some(blob.as_ref().to_vec()))
+            }
+            _ => Err(crate::error::Error::Internal(format!(
+                "dynamodb cache {key}: missing or non-binary value attribute"
+            ))),
+        }
+    }
+
+    async fn set_cache(
+        &self,
+        key: &str,
+        value: Vec<u8>,
+        expires_at: std::time::SystemTime,
+    ) -> crate::error::Result<()> {
+        let exp = expires_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| {
+                crate::error::Error::Internal(format!("cache {key} expiry before epoch: {e}"))
+            })?
+            .as_secs();
+        let ttl = exp + TTL_BUFFER.as_secs();
+        let mut item = std::collections::HashMap::new();
+        item.insert(
+            "pk".to_string(),
+            DynamoDbStorage::s(DynamoDbStorage::cache_pk(key)),
+        );
+        item.insert("sk".to_string(), DynamoDbStorage::s(CACHE_TYPE));
+        item.insert(
+            "value".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::B(aws_smithy_types::Blob::new(value)),
+        );
+        item.insert(
+            "exp".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::N(exp.to_string()),
+        );
+        item.insert(
+            "ttl".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::N(ttl.to_string()),
+        );
+
+        // Overwrite allowed: a cache entry is last-writer-wins, no condition.
+        self.client
+            .put_item()
+            .table_name(&self.table_name)
+            .set_item(Some(item))
+            .send()
+            .await
+            .map_err(|e| {
+                crate::error::Error::Internal(format!(
+                    "dynamodb PutItem(cache {key}): {}",
+                    aws_smithy_types::error::display::DisplayErrorContext(&e.into_service_error())
+                ))
+            })?;
+        Ok(())
     }
 }
 
@@ -592,5 +688,91 @@ mod tests {
         let all = storage.list_revocations().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].serial_number, "123");
+    }
+
+    fn cache_item(
+        value: &[u8],
+        exp: u64,
+    ) -> std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue> {
+        let mut item = std::collections::HashMap::new();
+        item.insert(
+            "pk".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::S("cache:k".to_string()),
+        );
+        item.insert(
+            "sk".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::S("cache".to_string()),
+        );
+        item.insert(
+            "value".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::B(aws_smithy_types::Blob::new(value.to_vec())),
+        );
+        item.insert(
+            "exp".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::N(exp.to_string()),
+        );
+        item
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[tokio::test]
+    async fn get_cache_parses_fresh_item() {
+        use crate::storage::Storage;
+        let get = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::get_item).then_output(|| {
+            aws_sdk_dynamodb::operation::get_item::GetItemOutput::builder()
+                .set_item(Some(super::tests::cache_item(
+                    b"hello",
+                    super::tests::unix_now() + 60,
+                )))
+                .build()
+        });
+        let storage = super::DynamoDbStorage::new(client(&[&get]), "tbl".to_string());
+        assert_eq!(
+            storage.get_cache("k").await.unwrap(),
+            Some(b"hello".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_cache_expired_returns_none() {
+        use crate::storage::Storage;
+        let get = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::get_item).then_output(|| {
+            aws_sdk_dynamodb::operation::get_item::GetItemOutput::builder()
+                .set_item(Some(super::tests::cache_item(
+                    b"stale",
+                    super::tests::unix_now() - 1,
+                )))
+                .build()
+        });
+        let storage = super::DynamoDbStorage::new(client(&[&get]), "tbl".to_string());
+        // `exp` is in the past, so the entry is treated as absent.
+        assert_eq!(storage.get_cache("k").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn get_cache_missing_returns_none() {
+        use crate::storage::Storage;
+        let get = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::get_item).then_output(|| {
+            aws_sdk_dynamodb::operation::get_item::GetItemOutput::builder().build()
+        });
+        let storage = super::DynamoDbStorage::new(client(&[&get]), "tbl".to_string());
+        assert_eq!(storage.get_cache("k").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn set_cache_puts_item() {
+        use crate::storage::Storage;
+        let put = aws_smithy_mocks::mock!(aws_sdk_dynamodb::Client::put_item).then_output(|| {
+            aws_sdk_dynamodb::operation::put_item::PutItemOutput::builder().build()
+        });
+        let storage = super::DynamoDbStorage::new(client(&[&put]), "tbl".to_string());
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(300);
+        storage.set_cache("k", b"v".to_vec(), future).await.unwrap();
     }
 }

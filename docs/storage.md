@@ -92,8 +92,12 @@ A backend implements these asynchronous operations:
 | `get_revocation(serial)` | Return the revocation record for a serial number, or none. |
 | `list_revocations()` | Return every revocation record, e.g. to assemble a CRL. |
 | `claim_token(jti, expires_at)` | Atomically claim a one-time id. Returns a conflict (surfaced as `401 Unauthorized`, "already been used") if it was already claimed. |
+| `get_cache(key)` | Return a cached byte value, or none when absent **or expired** (expiry enforced on read). |
+| `set_cache(key, value, expires_at)` | Write a cached byte value with an absolute expiry, overwriting any existing entry. |
 
 The atomicity of `claim_token` is what makes anti-replay safe under concurrency: two simultaneous requests carrying the same token race on the claim, and exactly one wins.
+
+The two `*_cache` methods are a **general-purpose key/value cache with per-entry expiry**, used today to memoize the signed `/v1/roots` artifact (see [the HTTP API](api.md)) but available for any cached value. The trait is byte-oriented to stay object-safe; the typed helpers `cache_get::<T>` / `cache_set::<T>` (in `storage::mod`) wrap it with JSON serialization.
 
 ## DynamoDB backend
 
@@ -155,6 +159,18 @@ ttl = <expiry epoch seconds>            (Number)
 
 `claim_token` writes with an `attribute_not_exists(pk)` condition; a conditional-check failure means the id was already claimed and is reported as a replay.
 
+### Cache items
+
+```
+pk    = "cache:<key>"
+sk    = "cache"
+value = <cached bytes>                  (Binary)
+exp   = <real expiry epoch seconds>     (Number)
+ttl   = <exp + buffer epoch seconds>    (Number)
+```
+
+`set_cache` writes unconditionally (last-writer-wins). `get_cache` honours the real expiry `exp` on read — `ttl` is padded beyond `exp` so DynamoDB's lazy TTL deletion never reaps an entry the application still considers valid, the same pattern as the token denylist. Enable DynamoDB TTL on `ttl` (already covered by the [update-time-to-live](#enabling-automatic-expiry) step above) to reap expired cache rows automatically.
+
 ### Enabling automatic expiry
 
 The denylist rows carry a `ttl` attribute holding the expiry as Unix epoch seconds. Enable DynamoDB Time To Live on that attribute so expired claims are reaped automatically and the table does not grow without bound:
@@ -186,7 +202,7 @@ See the [deployment guide](deployment.md) for the full IAM policy and AWS wiring
 
 ## SQLite backend
 
-The `sqlite` backend stores all three concerns in one SQLite database. With the default `:memory:` path it is an in-process database — simple and fast but **not durable** and **not shared** across instances: restarting the server forgets all state, and two instances do not see each other's. A filesystem `path` makes it durable for a single node, but it is still local to that node. Use `:memory:` for development and tests; use a filesystem path only for single-node deployments. For any multi-instance or Lambda deployment, use DynamoDB.
+The `sqlite` backend stores all of the above in one SQLite database (the inventory, revocations, the token denylist, and the `cache` table). With the default `:memory:` path it is an in-process database — simple and fast but **not durable** and **not shared** across instances: restarting the server forgets all state, and two instances do not see each other's. A filesystem `path` makes it durable for a single node, but it is still local to that node. Use `:memory:` for development and tests; use a filesystem path only for single-node deployments. For any multi-instance or Lambda deployment, use DynamoDB.
 
 ## Operational notes
 

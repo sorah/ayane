@@ -114,4 +114,48 @@ pub trait Storage: Send + Sync {
         jti: &str,
         expires_at: std::time::SystemTime,
     ) -> crate::error::Result<()>;
+
+    /// Read a cached value, or `None` when the key is absent or its entry has
+    /// expired. Expiry is enforced on read, not only by background reaping.
+    ///
+    /// A general-purpose key/value cache with per-entry expiry; the typed
+    /// [`cache_get`] / [`cache_set`] helpers wrap these byte methods with JSON
+    /// serialization. (The byte signature keeps [`Storage`] object-safe — a
+    /// generic `get_cache<T>` could not be used through `dyn Storage`.)
+    async fn get_cache(&self, key: &str) -> crate::error::Result<Option<Vec<u8>>>;
+
+    /// Write a cached value with an absolute expiry, overwriting any existing
+    /// entry for the key.
+    async fn set_cache(
+        &self,
+        key: &str,
+        value: Vec<u8>,
+        expires_at: std::time::SystemTime,
+    ) -> crate::error::Result<()>;
+}
+
+/// Read a JSON-serialized cached value via [`Storage::get_cache`], or `None` when
+/// absent or expired.
+pub async fn cache_get<T: serde::de::DeserializeOwned>(
+    storage: &dyn Storage,
+    key: &str,
+) -> crate::error::Result<Option<T>> {
+    match storage.get_cache(key).await? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| crate::error::Error::Internal(format!("deserialize cache {key:?}: {e}"))),
+        None => Ok(None),
+    }
+}
+
+/// Write a JSON-serializable value to the cache via [`Storage::set_cache`].
+pub async fn cache_set<T: serde::Serialize>(
+    storage: &dyn Storage,
+    key: &str,
+    value: &T,
+    expires_at: std::time::SystemTime,
+) -> crate::error::Result<()> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|e| crate::error::Error::Internal(format!("serialize cache {key:?}: {e}")))?;
+    storage.set_cache(key, bytes, expires_at).await
 }
