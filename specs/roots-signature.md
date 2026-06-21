@@ -174,9 +174,10 @@ prints nothing and exits non-zero):
 1. Read the raw response **bytes** (before JSON parsing) and all four headers;
    any missing header → reject.
 2. Recompute `SHA384(body)` and compare to `Content-Digest`; mismatch → reject.
-3. Parse `Signature-Input` parameters; require `now < expires` and
-   `created <= now + 60s` (clock-skew leeway, matching the OTT/DPoP 60s
-   convention); stale or future-dated → reject.
+3. Parse `Signature-Input` parameters; require `expires > created`,
+   `expires - created <= 7d` (a defensive cap on the replay window against a
+   misconfigured server), `now < expires`, and `created <= now + 60s`
+   (clock-skew leeway, matching the OTT/DPoP 60s convention); otherwise reject.
 4. Parse the `Signature-Key` `x5u` and `x5t`. Resolve `x5u` to a fetch URL
    **constrained to the client's own `--url` origin**: a relative reference is
    resolved against `--url`; an absolute `x5u` whose origin differs from `--url`
@@ -189,13 +190,24 @@ prints nothing and exits non-zero):
    and verify `Signature` against `C[0]`'s public key using `alg`; bad signature
    → reject.
 7. **Anchor the signer in the pinned bundle** `K` (the certificates parsed from
-   `--root`):
-   - verify each adjacent link `C[i]` is signed by `C[i+1]`'s key
-     (`i = 0..n-1`); and
-   - verify the top of the presented chain, `C[n-1]`, is either **byte-equal to**
-     a cert in `K`, or **issued by** (signature verifies under) a cert in `K`
-     whose subject equals `C[n-1]`'s issuer.
-   No anchor found → reject.
+   `--root`) by **path building**, not a fixed linear walk — the served chain is
+   an unordered *bag* of candidate issuers that may include cross-signed twins
+   (same subject and key, signed by different roots) so that a single bag serves
+   clients pinned to either an old or a new root during a root rotation. From the
+   signer `C[0]`, search for a path where:
+   - every cert on the path is **temporally valid** (`notBefore <= now <= notAfter`);
+   - each **issuer** used from the bag asserts `basicConstraints` cA=TRUE and
+     actually signed its child (matched by issuer/subject DN **and** signature,
+     never by array position);
+   - a **cross-signed twin** of any cert on the path (same subject+key, possibly a
+     different issuer) may be substituted — so the signer can anchor via a twin
+     issued by a different root than its own `issuer` field names; and
+   - the path terminates at a cert that is **byte-equal to** a cert in `K`, or is
+     **issued by** (signature verifies under) a cert in `K`. Pinned roots in `K`
+     are trusted a priori, so their own validity/CA bits are not re-checked.
+
+   A loop guard (on `(subject, key, issuer)` edges) and a depth bound keep the
+   search terminating. No path found → reject.
 8. On success, print `certificates` exactly as today.
 
 Verification therefore makes **two** requests to the CA origin (the `roots`
@@ -342,18 +354,21 @@ entry for the key.
 - **Body binding** via `Content-Digest` (a covered component) prevents
   tampering with the returned roots independent of the chain.
 - **Replay bounding** via `created`/`expires`. The client enforces
-  `now < expires` and a 60 s future-skew cap on `created`. `ttl` trades
-  signing cost against replay window; default `24h`.
+  `expires > created`, `expires - created <= 7d` (defensive cap against a
+  misconfigured server), `now < expires`, and a 60 s future-skew cap on
+  `created`. `ttl` trades signing cost against replay window; default `24h`.
 - **Algorithm pinning.** `alg` is taken from the CA key on the server and, on the
   client, the verifier dispatches on the `alg` token but the *key type* is fixed
   by the signer certificate's SPKI — there is no negotiation and no `alg=none`
   path. Unknown/unsupported `alg` → reject.
-- **Minimal path validation, scoped.** Client anchoring checks issuer/subject
-  linkage and signature linkage up to `K`. Full RFC 5280 path validation (name
-  constraints, EKU, policy, revocation of the *signer*) is **out of scope** —
-  these are the operator's own CA certificates, pinned by the operator. Basic
-  certificate validity-window checking of the signer chain is out of scope for v1
-  (the signature's own `expires` bounds freshness); noted as a possible follow-up.
+- **Path validation, scoped.** Client anchoring is a real path build: issuer
+  matched by DN **and** signature (not array order, so cross-signed bags
+  validate), `notBefore`/`notAfter` enforced on every served cert, and
+  `basicConstraints` cA=TRUE required on intermediates. The remaining RFC 5280
+  checks — name constraints, EKU, policy, and revocation of the *signer* chain —
+  are **out of scope**: these are the operator's own pinned CA certificates.
+  Pinned roots in `K` are trusted a priori (their own validity is not re-checked),
+  matching how a trust store works.
 - **No secret material exposed.** `/v1/roots/signer-chain` serves only public
   certificates, already returned wholesale by other endpoints' `chain`.
 - **Caching does not weaken anything.** Cached artifacts are public; the cache
@@ -376,9 +391,10 @@ entry for the key.
 - A general-purpose RFC 9421 engine (arbitrary covered components, request
   signing, multiple signatures, content negotiation). The implementation is
   specialized to this one response message.
-- Full RFC 5280 path validation of the signer chain on the client (name
-  constraints / EKU / policy / signer revocation); signer-chain validity-window
-  checking deferred to a follow-up.
+- Remaining RFC 5280 path-validation checks of the signer chain (name
+  constraints, EKU, policy, signer revocation). The client *does* enforce
+  temporal validity, `basicConstraints` cA, and signature/issuer linkage with
+  cross-signed-twin support (see Security and Privacy Considerations).
 - Inline `x5c` chain delivery (rejected for header size); only `x5u`+`x5t`
   reference delivery is implemented.
 - `rsa-pss-*` algorithms (the CA never signs with PSS).
@@ -624,10 +640,16 @@ document `ca.roots_signature.ttl`. `examples/ayane.example.json`: add
   `ecdsa-p384-sha384` → `p384::ecdsa` (96 bytes),
   `rsa-v1_5-sha{256,384,512}` → `rsa::pkcs1v15` with the matching digest;
   verifying key from the signer cert's `SubjectPublicKeyInfo`.
-- A `verify_x509_link(child, parent_spki)` mirroring the server's
+- A `verify_x509_signature(child, parent_spki)` mirroring the server's
   `crypto::verify_signature` (ECDSA DER + RSA PKCS#1, dispatched on the child's
   `signatureAlgorithm` OID) for chain-link and anchor checks. Anchor set `K`
   parsed from the `--root` PEM bundle via `x509-cert`.
+- A recursive path builder `anchor_signer` (with a precomputed `Node` per cert:
+  subject/issuer/SPKI/full DER, validity window, `is_ca`). It searches from the
+  signer through the served bag for a path to `K`, substituting cross-signed twins
+  (same subject+key), enforcing per-cert temporal validity and intermediate
+  `cA=TRUE`, guarding against loops on `(subject, key, issuer)` edges, and bounded
+  by `MAX_PATH_DEPTH`. Replaces the earlier linear `windows(2)` walk.
 
 No new `ayane-cli` deps (it already has `x509-cert`, `der`, `spki`, `p256`,
 `p384`, `rsa`, `sha2`, `signature`, `base64`, `pem`).
@@ -718,6 +740,13 @@ Decisions locked:
   reference `x5u`+`x5t` with a new unsigned `GET /v1/roots/signer-chain` PEM
   endpoint, to avoid response-header size limits. Client gains a same-origin
   signer-chain fetch and an `x5t` leaf-binding step (now an 8-step routine).
+- 2026-06-22: Hardened client anchoring after a security review. Replaced the
+  linear `windows(2)` chain walk — which wrongly rejected any served bag
+  containing a cross-signed/cross-root cert — with a real path build (issuer by
+  DN + signature, cross-signed-twin substitution, loop guard, depth bound). Added
+  signer-chain temporal-validity and `basicConstraints` cA enforcement, and a
+  client-side cap (`expires - created <= 7d`, plus `expires > created`) on the
+  signature lifetime. Pinned roots remain trusted a priori.
 - 2026-06-22: Default `ca.roots_signature.ttl` set to `24h` (was `1h`).
 - 2026-06-22: `Content-Digest` over the roots body uses **SHA-384** (was
   SHA-256), matching the SHA-384 signing tier. `sha-384` is an ayane-private

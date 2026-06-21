@@ -15,6 +15,15 @@ use der::{Decode, Encode};
 /// convention.
 const SKEW: u64 = 60;
 
+/// Upper bound on a signature's `expires - created` lifetime. The server default
+/// is 24h; this caps the replay window defensively so a misconfigured CA cannot
+/// hand out a signature valid for an unreasonably long time.
+const MAX_SIGNATURE_LIFETIME: u64 = 7 * 24 * 3600;
+
+/// Maximum number of intermediate hops considered while anchoring the signer
+/// chain, a backstop against a pathological bag of certificates.
+const MAX_PATH_DEPTH: usize = 8;
+
 /// The header values pulled off the `GET /v1/roots` response.
 pub(crate) struct ResponseHeaders {
     pub content_digest: String,
@@ -44,6 +53,12 @@ pub(crate) fn verify_roots_response(
 
     // 2. Freshness.
     let params = ayane_protocol::httpsig::parse_roots_sig_params(&headers.signature_input)?;
+    if params.expires <= params.created {
+        anyhow::bail!("roots signature expires before it was created");
+    }
+    if params.expires - params.created > MAX_SIGNATURE_LIFETIME {
+        anyhow::bail!("roots signature lifetime exceeds the maximum allowed");
+    }
     if now >= params.expires {
         anyhow::bail!("roots signature has expired");
     }
@@ -79,41 +94,156 @@ pub(crate) fn verify_roots_response(
     if known.is_empty() {
         anyhow::bail!("pinned root bundle contains no certificates");
     }
-    anchor_to_known(&chain, &known)?;
+    anchor_signer(&chain, &known, now)?;
 
     Ok(())
 }
 
-/// Verify that the signer chain links up to a certificate in `known`.
-fn anchor_to_known(
-    chain: &[x509_cert::Certificate],
-    known: &[x509_cert::Certificate],
-) -> anyhow::Result<()> {
-    // Each presented cert must be signed by the next one.
-    for pair in chain.windows(2) {
-        let parent_spki = pair[1].tbs_certificate.subject_public_key_info.to_der()?;
-        verify_x509_signature(&pair[0], &parent_spki)
-            .map_err(|e| anyhow::anyhow!("signer chain link is not valid: {e}"))?;
+/// A parsed certificate with the fields path-building needs precomputed.
+struct Node<'a> {
+    cert: &'a x509_cert::Certificate,
+    subject: Vec<u8>,
+    issuer: Vec<u8>,
+    spki: Vec<u8>,
+    der: Vec<u8>,
+    not_before: u64,
+    not_after: u64,
+    is_ca: bool,
+}
+
+impl<'a> Node<'a> {
+    fn new(cert: &'a x509_cert::Certificate) -> anyhow::Result<Node<'a>> {
+        Ok(Node {
+            subject: cert.tbs_certificate.subject.to_der()?,
+            issuer: cert.tbs_certificate.issuer.to_der()?,
+            spki: cert.tbs_certificate.subject_public_key_info.to_der()?,
+            der: cert.to_der()?,
+            not_before: cert
+                .tbs_certificate
+                .validity
+                .not_before
+                .to_unix_duration()
+                .as_secs(),
+            not_after: cert
+                .tbs_certificate
+                .validity
+                .not_after
+                .to_unix_duration()
+                .as_secs(),
+            is_ca: is_ca(cert),
+            cert,
+        })
     }
 
-    // The top of the presented chain must be a known root, or be issued by one.
-    let top = chain
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("signer chain is empty"))?;
-    let top_der = top.to_der()?;
-    let top_issuer = top.tbs_certificate.issuer.to_der()?;
-    for k in known {
-        if k.to_der()? == top_der {
-            return Ok(());
+    fn temporally_valid(&self, now: u64) -> bool {
+        self.not_before <= self.not_after && self.not_before <= now && now <= self.not_after
+    }
+}
+
+/// Anchor the signer (`chain[0]`, already bound to `x5t` and signature-verified)
+/// to a certificate in the pinned bundle `known`.
+///
+/// This is a path search, not a fixed linear walk: the served `chain` is an
+/// unordered *bag* of candidate issuers that may include cross-signed twins
+/// (same subject and key, signed by different roots) to support root rotation,
+/// so issuers are matched by name + signature rather than by array position. A
+/// valid path exists when the signer — or a same-key twin of any cert on the
+/// path — is issued by (or is byte-equal to) a pinned root, with every served
+/// cert temporally valid and every intermediate marked as a CA.
+fn anchor_signer(
+    chain: &[x509_cert::Certificate],
+    known: &[x509_cert::Certificate],
+    now: u64,
+) -> anyhow::Result<()> {
+    let bag = chain
+        .iter()
+        .map(Node::new)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let anchors = known
+        .iter()
+        .map(Node::new)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut visited: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new();
+    if reaches_anchor(&bag[0], &bag, &anchors, now, &mut visited, 0) {
+        Ok(())
+    } else {
+        anyhow::bail!("signer chain does not anchor to the pinned root bundle")
+    }
+}
+
+/// Whether `cert` (or a cross-signed twin of it in `bag`) reaches a pinned
+/// anchor. `visited` records the `(subject, spki, issuer)` of edges already on
+/// the current path to prevent loops.
+fn reaches_anchor(
+    cert: &Node<'_>,
+    bag: &[Node<'_>],
+    anchors: &[Node<'_>],
+    now: u64,
+    visited: &mut Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    depth: usize,
+) -> bool {
+    if depth > MAX_PATH_DEPTH {
+        return false;
+    }
+    // The equivalence class of `cert`: itself plus any bag cert with the same
+    // subject and key — a cross-signed twin, which may carry a different issuer
+    // and so reach a different (e.g. older) root.
+    let twins =
+        std::iter::once(cert).chain(bag.iter().filter(|n| {
+            !std::ptr::eq(*n, cert) && n.subject == cert.subject && n.spki == cert.spki
+        }));
+
+    for t in twins {
+        if !t.temporally_valid(now) {
+            continue;
         }
-        if k.tbs_certificate.subject.to_der()? == top_issuer {
-            let k_spki = k.tbs_certificate.subject_public_key_info.to_der()?;
-            if verify_x509_signature(top, &k_spki).is_ok() {
-                return Ok(());
+        let edge = (t.subject.clone(), t.spki.clone(), t.issuer.clone());
+        if visited.contains(&edge) {
+            continue;
+        }
+
+        // Anchored: this representative IS a pinned root, or is issued by one.
+        // A pinned anchor is trusted a priori, so its own validity/CA bits are
+        // not re-checked here.
+        if anchors.iter().any(|a| a.der == t.der) {
+            return true;
+        }
+        if anchors
+            .iter()
+            .any(|a| a.subject == t.issuer && verify_x509_signature(t.cert, &a.spki).is_ok())
+        {
+            return true;
+        }
+
+        // Otherwise climb: any bag cert that is a CA, is named as `t`'s issuer,
+        // and actually signed `t`.
+        visited.push(edge);
+        for issuer in bag.iter().filter(|n| {
+            n.is_ca && n.subject == t.issuer && verify_x509_signature(t.cert, &n.spki).is_ok()
+        }) {
+            if reaches_anchor(issuer, bag, anchors, now, visited, depth + 1) {
+                return true;
             }
         }
+        visited.pop();
     }
-    anyhow::bail!("signer chain does not anchor to the pinned root bundle")
+    false
+}
+
+/// Whether `cert` asserts `basicConstraints` cA=TRUE.
+fn is_ca(cert: &x509_cert::Certificate) -> bool {
+    use const_oid::AssociatedOid;
+    let Some(exts) = &cert.tbs_certificate.extensions else {
+        return false;
+    };
+    for ext in exts {
+        if ext.extn_id == x509_cert::ext::pkix::BasicConstraints::OID {
+            return x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes())
+                .map(|bc| bc.ca)
+                .unwrap_or(false);
+        }
+    }
+    false
 }
 
 /// Verify an RFC 9421 message signature (`raw` over `msg`) using the public key
@@ -297,6 +427,186 @@ mod tests {
 
     fn pem_of(cert: &x509_cert::Certificate) -> String {
         cert.to_pem(der::pem::LineEnding::LF).unwrap()
+    }
+
+    fn spki_of(key: &p256::ecdsa::SigningKey) -> spki::SubjectPublicKeyInfoOwned {
+        use der::Decode;
+        use spki::EncodePublicKey;
+        spki::SubjectPublicKeyInfoOwned::from_der(
+            key.verifying_key().to_public_key_der().unwrap().as_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn time_at(offset_secs: i64) -> x509_cert::time::Time {
+        let base = now() as i64 + offset_secs;
+        x509_cert::time::Time::UtcTime(
+            der::asn1::UtcTime::from_unix_duration(std::time::Duration::from_secs(
+                base.max(0) as u64
+            ))
+            .unwrap(),
+        )
+    }
+
+    /// Mint a CA certificate. `issuer` is `(issuer_cn, issuer_key)`, or `None`
+    /// for a self-signed root. `subject_key`'s public half is embedded; the
+    /// validity window is `[now+nb_off, now+na_off]`.
+    fn make_ca(
+        subject_cn: &str,
+        subject_key: &p256::ecdsa::SigningKey,
+        issuer: Option<(&str, &p256::ecdsa::SigningKey)>,
+        nb_off: i64,
+        na_off: i64,
+    ) -> x509_cert::Certificate {
+        use std::str::FromStr;
+        use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+        let validity = x509_cert::time::Validity {
+            not_before: time_at(nb_off),
+            not_after: time_at(na_off),
+        };
+        let subject = x509_cert::name::Name::from_str(&format!("CN={subject_cn}")).unwrap();
+        let (profile, signer) = match issuer {
+            None => (Profile::Root, subject_key),
+            Some((issuer_cn, issuer_key)) => (
+                Profile::SubCA {
+                    issuer: x509_cert::name::Name::from_str(&format!("CN={issuer_cn}")).unwrap(),
+                    path_len_constraint: None,
+                },
+                issuer_key,
+            ),
+        };
+        let builder = CertificateBuilder::new(
+            profile,
+            x509_cert::serial_number::SerialNumber::from(1u32),
+            validity,
+            subject,
+            spki_of(subject_key),
+            signer,
+        )
+        .unwrap();
+        builder.build::<p256::ecdsa::DerSignature>().unwrap()
+    }
+
+    fn key() -> p256::ecdsa::SigningKey {
+        p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng)
+    }
+
+    #[test]
+    fn accepts_two_tier_signer() {
+        // Signer is an intermediate issued by a root; only the root is pinned and
+        // the intermediate is not even served alongside itself beyond chain[0].
+        let root_key = key();
+        let root = make_ca("root", &root_key, None, -60, 3600);
+        let signer_key = key();
+        let signer = make_ca(
+            "intermediate",
+            &signer_key,
+            Some(("root", &root_key)),
+            -60,
+            3600,
+        );
+
+        let body = b"body";
+        let headers = sign_response(&signer_key, &signer, body, now(), now() + 600);
+        super::verify_roots_response(
+            body,
+            &headers,
+            pem_of(&signer).as_bytes(),
+            pem_of(&root).as_bytes(),
+            now(),
+        )
+        .expect("two-tier signer anchors to the pinned root");
+    }
+
+    #[test]
+    fn accepts_cross_signed_during_root_rotation() {
+        // Root rotation: same root DN, two keys. The intermediate is signed by
+        // the new root; a cross-signed twin (same subject+key) is signed by the
+        // old root. A client trusting ONLY the old root must still anchor the
+        // signer via the twin — which the old linear `windows(2)` walk could not
+        // do, since the served bag is [signer, new-root, twin].
+        let old_root_key = key();
+        let new_root_key = key();
+        let old_root = make_ca("root", &old_root_key, None, -60, 3600);
+        let new_root = make_ca("root", &new_root_key, None, -60, 3600);
+        let signer_key = key();
+        let signer = make_ca(
+            "inter",
+            &signer_key,
+            Some(("root", &new_root_key)),
+            -60,
+            3600,
+        );
+        let twin = make_ca(
+            "inter",
+            &signer_key,
+            Some(("root", &old_root_key)),
+            -60,
+            3600,
+        );
+
+        let body = b"body";
+        let headers = sign_response(&signer_key, &signer, body, now(), now() + 600);
+        let bag = format!("{}{}{}", pem_of(&signer), pem_of(&new_root), pem_of(&twin));
+
+        // Client trusting only the OLD root anchors via the cross-signed twin.
+        super::verify_roots_response(
+            body,
+            &headers,
+            bag.as_bytes(),
+            pem_of(&old_root).as_bytes(),
+            now(),
+        )
+        .expect("anchors to the old root via the cross-signed twin");
+
+        // Client trusting only the NEW root anchors via the canonical path.
+        super::verify_roots_response(
+            body,
+            &headers,
+            bag.as_bytes(),
+            pem_of(&new_root).as_bytes(),
+            now(),
+        )
+        .expect("anchors to the new root via the canonical path");
+    }
+
+    #[test]
+    fn rejects_expired_signer_certificate() {
+        // The signature window is fresh, but the signer certificate itself has
+        // expired — it must not keep producing acceptable signatures.
+        let signer_key = key();
+        let signer = make_ca("ca", &signer_key, None, -7200, -3600);
+        let body = b"body";
+        let headers = sign_response(&signer_key, &signer, body, now(), now() + 600);
+        assert!(
+            super::verify_roots_response(
+                body,
+                &headers,
+                pem_of(&signer).as_bytes(),
+                pem_of(&signer).as_bytes(),
+                now(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_signature_lifetime_over_cap() {
+        let (signing, cert) = self_signed_ca();
+        let body = b"body";
+        // expires - created exceeds the client cap.
+        let headers = sign_response(
+            &signing,
+            &cert,
+            body,
+            now(),
+            now() + super::MAX_SIGNATURE_LIFETIME + 1,
+        );
+        let chain = pem_of(&cert);
+        assert!(
+            super::verify_roots_response(body, &headers, chain.as_bytes(), chain.as_bytes(), now())
+                .is_err()
+        );
     }
 
     #[test]

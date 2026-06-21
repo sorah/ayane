@@ -39,7 +39,7 @@ See [the API reference](api.md) for the full request/response shapes.
 
 **Why fetching the chain over untrusted TLS is safe.** The signer leaf is pinned by the signed `x5t`, so a substituted leaf is rejected; substituted intermediates fail link verification or anchoring. The signer chain (`/v1/roots/signer-chain`) is therefore served unsigned. Signatures are memoized in [storage](storage.md) keyed by a hash of the body, so a roots/config change re-signs automatically and the CA key (possibly KMS) is not invoked per request.
 
-**Scope.** The client performs issuer/signature-linkage path validation up to the pinned anchor; full RFC 5280 validation of the signer chain (name constraints, EKU, signer revocation) is out of scope — the signer is the operator's own pinned CA. Establishing the initial `--root` is an out-of-band step (shipped with the host).
+**Path validation.** Anchoring is a real path build, not a fixed walk over the served order: issuers are matched by DN **and** signature, so a bag containing cross-signed certificates (for old/new root rotation) validates, and the signer anchors via a same-key cross-signed twin when the client pins only one of the roots. The client enforces each served cert's validity window and `basicConstraints` cA=TRUE on intermediates, and bounds the signature lifetime (`expires - created`). The remaining RFC 5280 checks (name constraints, EKU, signer revocation) are out of scope — the signer is the operator's own pinned CA; pinned roots are trusted a priori. Establishing the initial `--root` is an out-of-band step (shipped with the host).
 
 ## OTT issuance tokens
 
