@@ -147,7 +147,7 @@ For this local demo we run plain HTTP on `127.0.0.1` (`server.tls.enabled = fals
 
 ## Run the server
 
-The server reads its config path from the first argument, then the `AYANE_CONFIG` environment variable, then defaults to `ayane.json`:
+The server reads its config from the first argument, then `AYANE_CONFIG_BASE64URL` (inline base64url-encoded JSON), then the `AYANE_CONFIG` path, then defaults to `ayane.json` — see [deployment](deployment.md) for details:
 
 ```bash
 ./target/release/ayane-server config.json

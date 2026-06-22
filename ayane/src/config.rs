@@ -49,6 +49,24 @@ impl Config {
         })?;
         Self::from_json(&text)
     }
+
+    /// Parse a configuration document from base64url (no padding) encoded JSON.
+    ///
+    /// Lets the whole configuration travel through a single environment variable
+    /// instead of a file, which is convenient for deployments — such as AWS
+    /// Lambda — where shipping a sidecar file is awkward.
+    pub fn from_base64url(encoded: &str) -> crate::error::Result<Self> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded.trim())
+            .map_err(|e| {
+                crate::error::Error::Config(format!("invalid base64url configuration: {e}"))
+            })?;
+        let text = String::from_utf8(bytes).map_err(|e| {
+            crate::error::Error::Config(format!("base64url configuration is not valid UTF-8: {e}"))
+        })?;
+        Self::from_json(&text)
+    }
 }
 
 /// A PEM document sourced either from a file path or given inline. Modeled as an
@@ -440,6 +458,25 @@ mod tests {
             config.storage,
             super::StorageConfig::Sqlite { path } if path == ":memory:"
         ));
+    }
+
+    #[test]
+    fn parses_base64url_encoded_config() {
+        use base64::Engine;
+        let text = include_str!("../../examples/ayane.example.json");
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
+        let config = super::Config::from_base64url(&encoded).expect("base64url config parses");
+        assert_eq!(config.provisioners.len(), 1);
+
+        // A trailing newline (as an environment variable may carry) is tolerated.
+        let config = super::Config::from_base64url(&format!("{encoded}\n"))
+            .expect("trailing newline tolerated");
+        assert_eq!(config.provisioners.len(), 1);
+    }
+
+    #[test]
+    fn rejects_malformed_base64url_config() {
+        assert!(super::Config::from_base64url("not base64!!!").is_err());
     }
 
     #[test]

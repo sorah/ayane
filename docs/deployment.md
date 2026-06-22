@@ -6,11 +6,12 @@ This page covers both run modes, the AWS-native backends (KMS signing keys, Dyna
 
 ## The `ayane-server` binary
 
-The server reads its configuration path from, in order of precedence:
+The server resolves its configuration from, in order of precedence:
 
-1. The first command-line argument.
-2. The `AYANE_CONFIG` environment variable.
-3. The default `ayane.json` in the working directory.
+1. A file path given as the first command-line argument.
+2. The `AYANE_CONFIG_BASE64URL` environment variable: the whole document as base64url (no padding) encoded JSON, carried inline. Useful where shipping a sidecar file is awkward, such as AWS Lambda.
+3. The `AYANE_CONFIG` environment variable: a file path.
+4. The default `ayane.json` in the working directory.
 
 ```bash
 # Explicit path
@@ -18,6 +19,9 @@ ayane-server /etc/ayane/ayane.json
 
 # Via environment variable
 AYANE_CONFIG=/etc/ayane/ayane.json ayane-server
+
+# Inline, base64url (no padding) encoded JSON
+AYANE_CONFIG_BASE64URL=$(basenc --base64url -w0 ayane.json | tr -d '=') ayane-server
 ```
 
 Logging uses `tracing` with an env-filter; set `RUST_LOG` to control verbosity (defaults to `info`).
@@ -131,7 +135,7 @@ Set `server.external_url` to the Function URL's public base (for example `https:
 Packaging notes:
 
 - Build the binary for the Lambda runtime (a static or `provided.al2023`-compatible build) and deploy it as a custom-runtime function whose handler is `ayane-server`.
-- Bundle the configuration alongside the binary and point `AYANE_CONFIG` at its in-package path, or reference a config baked into the image.
+- Pass the configuration inline via `AYANE_CONFIG_BASE64URL` (base64url, no padding, of the JSON document) so the function needs no sidecar file, or bundle a config alongside the binary and point `AYANE_CONFIG` at its in-package path.
 - Lambda functions are stateless and may run many concurrent instances, so use a durable, shared backend (DynamoDB) for state. The default in-memory storage does not share revocations or one-time-token claims across instances and must not be used in Lambda. See [storage](storage.md).
 - The function's execution role supplies AWS credentials for KMS, DynamoDB, EventBridge, and Lambda webhook calls.
 

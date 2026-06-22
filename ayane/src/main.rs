@@ -17,12 +17,7 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run() -> ayane::error::Result<()> {
-    let config_path = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("AYANE_CONFIG").ok())
-        .unwrap_or_else(|| "ayane.json".to_string());
-
-    let config = ayane::config::Config::from_path(std::path::Path::new(&config_path))?;
+    let config = load_config()?;
     let listen = config.server.listen.clone();
     let external_url = config.server.external_url.clone();
     let tls = config.server.tls.clone();
@@ -42,4 +37,26 @@ async fn run() -> ayane::error::Result<()> {
     };
 
     ayane::server::run(state, &listen, &tls).await
+}
+
+/// Resolve the configuration, in order of precedence:
+///
+/// 1. A file path given as the first command-line argument.
+/// 2. `AYANE_CONFIG_BASE64URL`: the whole document as base64url (no padding)
+///    encoded JSON, carried inline in an environment variable. Useful for AWS
+///    Lambda, where there is no convenient sidecar file.
+/// 3. `AYANE_CONFIG`: a file path.
+/// 4. The default `ayane.json` in the working directory.
+fn load_config() -> ayane::error::Result<ayane::config::Config> {
+    if let Some(arg) = std::env::args().nth(1) {
+        return ayane::config::Config::from_path(std::path::Path::new(&arg));
+    }
+    if let Some(encoded) = std::env::var("AYANE_CONFIG_BASE64URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        return ayane::config::Config::from_base64url(&encoded);
+    }
+    let path = std::env::var("AYANE_CONFIG").unwrap_or_else(|_| "ayane.json".to_string());
+    ayane::config::Config::from_path(std::path::Path::new(&path))
 }
