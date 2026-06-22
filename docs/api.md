@@ -15,7 +15,8 @@ on output (an optional `0x` hex form is accepted on input for revocation).
 | Method | Path | Auth | Success status |
 | --- | --- | --- | --- |
 | `GET` | `/v1/health` | none | `200 OK` |
-| `GET` | `/v1/roots` | none | `200 OK` |
+| `GET` | `/v1/roots` | none (response is signed) | `200 OK` |
+| `GET` | `/v1/roots/signer-chain` | none | `200 OK` |
 | `GET` | `/v1/provisioners` | none | `200 OK` |
 | `POST` | `/v1/sign` | OTT token (in body) | `201 Created` |
 | `POST` | `/v1/renew` | `DPoP` header | `201 Created` |
@@ -107,7 +108,11 @@ curl https://ca.example/v1/health
 ## GET /v1/roots
 
 Returns the CA's trusted root certificate(s) in PEM, for clients building a trust
-store. No authentication.
+store. No request authentication — but **the response is signed by the CA key**
+so a client can verify it was produced by this PKI even when TLS is terminated by
+a third-party certificate (e.g. behind an AWS Lambda Function URL). A client that
+trusts a pinned root bundle (such as `ayane roots --root`) **must** verify this
+signature; see [roots-response signature](#roots-response-signature) below.
 
 ### Request
 
@@ -116,6 +121,14 @@ curl https://ca.example/v1/roots
 ```
 
 ### Response — `200 OK`
+
+```http
+Content-Type: application/json
+Content-Digest: sha-384=:fNH2k...base64 SHA-384 of the body...:
+Signature-Key: sig=x509;x5u="/v1/roots/signer-chain";x5t="bWcoon4QTVn8Q6xiY0ekMD6L8bNLMkuDV2KtvsFc1nM"
+Signature-Input: sig=("@status" "content-type" "content-digest" "signature-key");created=1718360000;expires=1718363600;alg="ecdsa-p256-sha256"
+Signature: sig=:MEUCIQ...:
+```
 
 ```json
 {
@@ -128,6 +141,63 @@ curl https://ca.example/v1/roots
 | Field | Type | Description |
 | --- | --- | --- |
 | `certificates` | array of string | PEM-encoded trusted root certificate(s). |
+
+### Roots-response signature
+
+The response carries an [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421) HTTP
+Message Signature produced with the CA's issuing key. The signed message has a
+fixed covered-component set:
+
+```
+("@status" "content-type" "content-digest" "signature-key")
+```
+
+| Header | Purpose |
+| --- | --- |
+| `Content-Digest` | [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530)-format `sha-384` of the exact response body, binding the returned roots into the signature. (`sha-384` is an ayane-private choice — RFC 9530 registers only `sha-256`/`sha-512` — safe because the only verifier is `ayane-cli`.) |
+| `Signature-Key` | [draft-hardt-httpbis-signature-key](https://datatracker.ietf.org/doc/draft-hardt-httpbis-signature-key/) `x509` scheme: `x5u` references the signer chain at [`/v1/roots/signer-chain`](#get-v1rootssigner-chain) and `x5t` is the base64url SHA-256 thumbprint of the signer (issuing) certificate. Both are covered by the signature. |
+| `Signature-Input` | The covered set plus `created`, `expires` (the signature lifetime; default 24h, see [configuration](configuration.md)), and `alg` (the RFC 9421 algorithm token of the CA key, e.g. `ecdsa-p256-sha256`). |
+| `Signature` | The signature value. ECDSA uses the RFC 9421 fixed-width `r‖s` encoding. |
+
+Signatures are computed with a configurable lifetime and cached server-side
+(memoized in [storage](storage.md)), so serving them does not call the CA key
+(possibly AWS KMS) on every request.
+
+A verifying client (see [`ayane roots`](cli.md)) recomputes the body digest,
+checks `created`/`expires` freshness, fetches the signer chain from `x5u`
+(same-origin only), binds its leaf to the signed `x5t`, verifies the signature
+with the leaf's public key, and finally anchors the signer chain to its pinned
+trusted root bundle. Any failure is fatal.
+
+## GET /v1/roots/signer-chain
+
+Returns the signer certificate chain referenced by the `Signature-Key` `x5u` of
+[`GET /v1/roots`](#get-v1roots), as a concatenated PEM bundle (leaf-first: the
+issuing certificate, then any configured intermediates). No authentication and
+no signature — its integrity is enforced cryptographically by the verifier (the
+leaf is pinned by the signed `x5t`, links are signature-verified, and the chain
+is anchored to the client's pinned roots).
+
+### Request
+
+```bash
+curl https://ca.example/v1/roots/signer-chain
+```
+
+### Response — `200 OK`
+
+```http
+Content-Type: application/pem-certificate-chain
+```
+
+```
+-----BEGIN CERTIFICATE-----
+MIID...issuing CA...
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIID...intermediate...
+-----END CERTIFICATE-----
+```
 
 ## GET /v1/provisioners
 

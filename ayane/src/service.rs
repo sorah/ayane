@@ -21,6 +21,8 @@ pub struct Service {
     default_template_name: Option<String>,
     fallback_template: crate::template::CertificateTemplate,
     dpop_max_age: std::time::Duration,
+    roots_signature_ttl: std::time::Duration,
+    external_url: Option<String>,
 }
 
 /// Builder inputs for assembling a [`Service`] from already-constructed parts.
@@ -39,6 +41,11 @@ pub struct ServiceParts {
     pub templates: std::collections::HashMap<String, crate::template::CertificateTemplate>,
     /// Default template name.
     pub default_template_name: Option<String>,
+    /// Lifetime of each signed `/v1/roots` artifact.
+    pub roots_signature_ttl: std::time::Duration,
+    /// Public base URL, used to build an absolute same-origin `x5u` for the roots
+    /// signature; when unset, a relative `x5u` is signed instead.
+    pub external_url: Option<String>,
 }
 
 impl Service {
@@ -54,6 +61,8 @@ impl Service {
             default_template_name: parts.default_template_name,
             fallback_template: crate::template::CertificateTemplate::default(),
             dpop_max_age: std::time::Duration::from_secs(300),
+            roots_signature_ttl: parts.roots_signature_ttl,
+            external_url: parts.external_url,
         }
     }
 
@@ -74,6 +83,95 @@ impl Service {
         ayane_protocol::RootsResponse {
             certificates: self.ca.roots_pem().to_vec(),
         }
+    }
+
+    /// The signer certificate chain served at `GET /v1/roots/signer-chain`, as a
+    /// concatenated PEM bundle (leaf-first).
+    pub fn signer_chain_pem(&self) -> String {
+        self.ca.signer_chain_pem().concat()
+    }
+
+    /// `GET /v1/roots`, signed: the JSON body plus the RFC 9421 signature headers
+    /// (memoized in storage for `roots_signature_ttl`).
+    pub async fn signed_roots(&self) -> crate::error::Result<SignedRoots> {
+        let body = serde_json::to_vec(&self.roots())
+            .map_err(|e| crate::error::Error::Internal(format!("serialize roots: {e}")))?;
+        let digest: [u8; 48] = {
+            use sha2::Digest;
+            sha2::Sha384::digest(&body).into()
+        };
+        let content_digest = ayane_protocol::httpsig::content_digest_header(&digest);
+        // Salt the cache key with the body so any roots/chain/config change misses
+        // the cache and re-signs (its digest would otherwise not match the body).
+        let cache_key = format!("roots-sig:v1:{}", hex::encode(digest));
+
+        let now = std::time::SystemTime::now();
+        let now_secs = unix_secs(now);
+        let refresh_margin =
+            (self.roots_signature_ttl / 4).min(std::time::Duration::from_secs(300));
+
+        if let Some(cached) =
+            crate::storage::cache_get::<CachedRootsSig>(self.storage.as_ref(), &cache_key).await?
+            && now_secs + refresh_margin.as_secs() < cached.expires
+        {
+            return Ok(SignedRoots {
+                body,
+                content_type: ayane_protocol::httpsig::ROOTS_CONTENT_TYPE,
+                content_digest,
+                signature_input: cached.signature_input,
+                signature: cached.signature,
+                signature_key: cached.signature_key,
+            });
+        }
+
+        let x5u = format!(
+            "{}{}",
+            self.external_url.as_deref().unwrap_or(""),
+            ayane_protocol::httpsig::SIGNER_CHAIN_PATH
+        );
+        let x5t = ayane_protocol::httpsig::x5t_from_digest(self.ca.signer_leaf_sha256());
+        let signature_key = ayane_protocol::httpsig::signature_key_x509(&x5u, &x5t);
+
+        let created = now_secs;
+        let expires = created + self.roots_signature_ttl.as_secs();
+        let params = ayane_protocol::httpsig::RootsSigParams {
+            created,
+            expires,
+            alg: self.ca.signing_algorithm().rfc9421_alg().to_string(),
+        };
+        let base = ayane_protocol::httpsig::roots_signature_base(
+            200,
+            ayane_protocol::httpsig::ROOTS_CONTENT_TYPE,
+            &content_digest,
+            &signature_key,
+            &params,
+        );
+        let raw = self.ca.sign_http_message(base.as_bytes()).await?;
+        let signature = ayane_protocol::httpsig::signature_header_value(&raw);
+        let signature_input = ayane_protocol::httpsig::signature_input_value(&params);
+
+        crate::storage::cache_set(
+            self.storage.as_ref(),
+            &cache_key,
+            &CachedRootsSig {
+                created,
+                expires,
+                signature_key: signature_key.clone(),
+                signature: signature.clone(),
+                signature_input: signature_input.clone(),
+            },
+            now + self.roots_signature_ttl,
+        )
+        .await?;
+
+        Ok(SignedRoots {
+            body,
+            content_type: ayane_protocol::httpsig::ROOTS_CONTENT_TYPE,
+            content_digest,
+            signature_input,
+            signature,
+            signature_key,
+        })
     }
 
     /// `GET /v1/provisioners`.
@@ -592,6 +690,40 @@ impl Service {
             not_after: issued.not_after_rfc3339,
         }
     }
+}
+
+/// The signed `GET /v1/roots` response: the exact JSON body plus the four
+/// RFC 9421 signature header values to emit alongside it.
+pub struct SignedRoots {
+    /// Exact JSON body bytes (the same bytes that were digested and signed).
+    pub body: Vec<u8>,
+    /// `Content-Type` of the body.
+    pub content_type: &'static str,
+    /// `Content-Digest` header value.
+    pub content_digest: String,
+    /// `Signature-Input` header value.
+    pub signature_input: String,
+    /// `Signature` header value.
+    pub signature: String,
+    /// `Signature-Key` header value.
+    pub signature_key: String,
+}
+
+/// The cached signature material for a roots body (everything but the body and
+/// content-digest, which are recomputed deterministically each request).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedRootsSig {
+    created: u64,
+    expires: u64,
+    signature_key: String,
+    signature: String,
+    signature_input: String,
+}
+
+fn unix_secs(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn denial(

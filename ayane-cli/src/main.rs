@@ -6,6 +6,7 @@
 
 mod cmd;
 mod csrgen;
+mod httpsig;
 mod keypair;
 mod proof;
 

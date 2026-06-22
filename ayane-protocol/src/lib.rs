@@ -6,7 +6,9 @@
 //! an existing certificate.
 
 pub mod api;
+pub mod crypto;
 pub mod dpop;
+pub mod httpsig;
 pub mod problem;
 pub mod token;
 

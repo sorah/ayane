@@ -7,7 +7,8 @@
       "algorithm": "ECDSA_SHA256",
       "region": "us-east-1"
     },
-    "roots": [{ "file": "ca/root.crt" }]
+    "roots": [{ "file": "ca/root.crt" }],
+    "roots_signature": { "ttl": "24h" }
   },
 
   "provisioners": [

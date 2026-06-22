@@ -97,6 +97,30 @@ pub struct CaConfig {
     /// roots to keep either trusted across a root rotation.
     #[serde(default)]
     pub roots: Vec<PemSource>,
+    /// Signature applied to the `GET /v1/roots` response.
+    #[serde(default)]
+    pub roots_signature: RootsSignatureConfig,
+}
+
+/// Settings for the RFC 9421 signature over the `GET /v1/roots` response.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RootsSignatureConfig {
+    /// Lifetime of each signed roots artifact (`expires = created + ttl`). The
+    /// server re-signs before expiry; clients reject once `now >= expires`.
+    pub ttl: crate::duration::ConfigDuration,
+}
+
+impl Default for RootsSignatureConfig {
+    fn default() -> Self {
+        RootsSignatureConfig {
+            ttl: default_roots_signature_ttl(),
+        }
+    }
+}
+
+fn default_roots_signature_ttl() -> crate::duration::ConfigDuration {
+    crate::duration::ConfigDuration(std::time::Duration::from_secs(24 * 3600))
 }
 
 /// Signing-key backend.

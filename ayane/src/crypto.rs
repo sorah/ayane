@@ -81,6 +81,44 @@ impl SignatureAlgorithm {
         }
     }
 
+    /// The RFC 9421 signature algorithm token for this algorithm.
+    ///
+    /// The SHA-384/512 RSA tokens are ayane-private (RFC 9421 only registers
+    /// `rsa-v1_5-sha256` for PKCS#1 v1.5); the only verifier is `ayane-cli`.
+    pub fn rfc9421_alg(self) -> &'static str {
+        match self {
+            SignatureAlgorithm::EcdsaSha256 => "ecdsa-p256-sha256",
+            SignatureAlgorithm::EcdsaSha384 => "ecdsa-p384-sha384",
+            SignatureAlgorithm::RsaPkcs1Sha256 => "rsa-v1_5-sha256",
+            SignatureAlgorithm::RsaPkcs1Sha384 => "rsa-v1_5-sha384",
+            SignatureAlgorithm::RsaPkcs1Sha512 => "rsa-v1_5-sha512",
+        }
+    }
+
+    /// Re-encode an X.509 signature into RFC 9421 form.
+    ///
+    /// RFC 9421 ECDSA signatures are the fixed-width IEEE P1363 `r‖s`
+    /// concatenation, whereas a [`crate::key_provider::KeyProvider`] returns the
+    /// DER `ECDSA-Sig-Value` used in certificates; this converts between them.
+    /// RSA PKCS#1 v1.5 bytes are identical in both encodings, so they pass
+    /// through unchanged.
+    pub fn rfc9421_signature_from_der(self, der: &[u8]) -> crate::error::Result<Vec<u8>> {
+        let invalid = |e: &dyn std::fmt::Display| {
+            crate::error::Error::Internal(format!("re-encode ECDSA signature: {e}"))
+        };
+        match self {
+            SignatureAlgorithm::EcdsaSha256 => p256::ecdsa::Signature::from_der(der)
+                .map(|s| s.to_bytes().to_vec())
+                .map_err(|e| invalid(&e)),
+            SignatureAlgorithm::EcdsaSha384 => p384::ecdsa::Signature::from_der(der)
+                .map(|s| s.to_bytes().to_vec())
+                .map_err(|e| invalid(&e)),
+            SignatureAlgorithm::RsaPkcs1Sha256
+            | SignatureAlgorithm::RsaPkcs1Sha384
+            | SignatureAlgorithm::RsaPkcs1Sha512 => Ok(der.to_vec()),
+        }
+    }
+
     /// Parse from a config string such as `"ECDSA_SHA256"` / `"RSA_PKCS1_SHA256"`.
     pub fn parse(s: &str) -> crate::error::Result<Self> {
         match s.to_ascii_uppercase().replace(['-', ' '], "_").as_str() {
@@ -115,50 +153,18 @@ pub fn verify_signature(
     sig: &[u8],
     alg_oid: const_oid::ObjectIdentifier,
 ) -> crate::error::Result<()> {
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-
-    let invalid = |e: &dyn std::fmt::Display| {
-        crate::error::Error::Forbidden(format!("signature verification failed: {e}"))
-    };
-
-    if alg_oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256 {
-        let vk =
-            p256::ecdsa::VerifyingKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
-        let signature = p256::ecdsa::Signature::from_der(sig).map_err(|e| invalid(&e))?;
-        vk.verify(tbs, &signature).map_err(|e| invalid(&e))
-    } else if alg_oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_384 {
-        let vk =
-            p384::ecdsa::VerifyingKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
-        let signature = p384::ecdsa::Signature::from_der(sig).map_err(|e| invalid(&e))?;
-        vk.verify(tbs, &signature).map_err(|e| invalid(&e))
-    } else if alg_oid == const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha256>(spki_der, tbs, sig)
-    } else if alg_oid == const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha384>(spki_der, tbs, sig)
-    } else if alg_oid == const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION {
-        verify_rsa::<sha2::Sha512>(spki_der, tbs, sig)
-    } else {
-        Err(crate::error::Error::BadRequest(format!(
-            "unsupported signature algorithm: {alg_oid}"
-        )))
-    }
-}
-
-fn verify_rsa<D>(spki_der: &[u8], tbs: &[u8], sig: &[u8]) -> crate::error::Result<()>
-where
-    D: digest::Digest + const_oid::AssociatedOid,
-{
-    use signature::Verifier;
-    use spki::DecodePublicKey;
-
-    let invalid = |e: &dyn std::fmt::Display| {
-        crate::error::Error::Forbidden(format!("signature verification failed: {e}"))
-    };
-    let pubkey = rsa::RsaPublicKey::from_public_key_der(spki_der).map_err(|e| invalid(&e))?;
-    let vk = rsa::pkcs1v15::VerifyingKey::<D>::new(pubkey);
-    let signature = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| invalid(&e))?;
-    vk.verify(tbs, &signature).map_err(|e| invalid(&e))
+    ayane_protocol::crypto::verify_x509_signature(spki_der, tbs, sig, alg_oid).map_err(
+        |e| match e {
+            // A signature over a CSR/cert that does not validate is a caller error
+            // (forbidden); an unsupported algorithm is a bad request.
+            ayane_protocol::crypto::SignatureError::Invalid(_) => {
+                crate::error::Error::Forbidden(e.to_string())
+            }
+            ayane_protocol::crypto::SignatureError::Unsupported(_) => {
+                crate::error::Error::BadRequest(e.to_string())
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -186,5 +192,31 @@ mod tests {
             super::SignatureAlgorithm::EcdsaSha256
         );
         assert!(super::SignatureAlgorithm::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn ecdsa_der_to_rfc9421_is_fixed_width_p1363() {
+        use signature::Signer;
+        let key = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+        let signature: p256::ecdsa::Signature = key.sign(b"message");
+        let der = signature.to_der();
+        let raw = super::SignatureAlgorithm::EcdsaSha256
+            .rfc9421_signature_from_der(der.as_bytes())
+            .unwrap();
+        // P-256 P1363 signatures are exactly 64 bytes (r‖s) and equal the
+        // signature's own fixed-width encoding.
+        assert_eq!(raw.len(), 64);
+        assert_eq!(raw, signature.to_bytes().to_vec());
+    }
+
+    #[test]
+    fn rsa_signature_passes_through_unchanged() {
+        let bytes = vec![1u8, 2, 3, 4];
+        assert_eq!(
+            super::SignatureAlgorithm::RsaPkcs1Sha256
+                .rfc9421_signature_from_der(&bytes)
+                .unwrap(),
+            bytes
+        );
     }
 }
