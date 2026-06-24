@@ -1,6 +1,6 @@
 # Configuration reference
 
-ayane is configured by a single JSON document (default `ayane.json`, overridable with the `AYANE_CONFIG` environment variable or a path argument to `ayane-server`). This page is the exhaustive reference for every top-level key, the nested types they reference, and the boot-time validation ayane performs before it starts serving.
+ayane is configured by a single JSON document (default `ayane.json`, overridable with a path argument to `ayane-server`, the `AYANE_CONFIG` environment variable, or — passed inline as base64url-encoded JSON — the `AYANE_CONFIG_BASE64URL` environment variable; see [deployment](deployment.md) for the full precedence). This page is the exhaustive reference for every top-level key, the nested types they reference, and the boot-time validation ayane performs before it starts serving.
 
 The document is parsed by [`Config::from_json`](../ayane/src/config.rs) and turned into live providers by `build_service` in [`builder.rs`](../ayane/src/builder.rs). The top-level object and most nested structs use `#[serde(deny_unknown_fields)]`, so an unknown or misspelled key is a hard parse error, not a silently ignored field.
 

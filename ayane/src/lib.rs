@@ -14,6 +14,7 @@
 
 pub mod authorizer;
 pub mod aws;
+pub mod bootstrap;
 pub mod builder;
 pub mod ca;
 pub mod config;
