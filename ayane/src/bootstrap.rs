@@ -3,7 +3,7 @@
 //! For deployments — notably AWS Lambda — where shipping the whole configuration
 //! inline or as a file is awkward, the server is handed only a *bootstrap*: which
 //! storage backend holds the configuration (as base64url JSON, small enough for
-//! an environment variable) and the SHA-384 digest that both locates and
+//! an environment variable) and the SHA-256 digest that both locates and
 //! authenticates the document. The configuration itself is written to the storage
 //! cache out of band — by deployment tooling — under a digest-derived key; ayane
 //! reads it back through [`crate::storage::Storage::get_cache`], verifies the
@@ -12,7 +12,7 @@
 /// Load and verify the configuration document from a storage backend.
 ///
 /// `storage_base64url` is the bootstrap [`crate::config::StorageConfig`] as
-/// base64url (no padding) JSON; `digest` is the base64url (no padding) SHA-384 of
+/// base64url (no padding) JSON; `digest` is the base64url (no padding) SHA-256 of
 /// the configuration document, used both to derive the cache key and to
 /// authenticate the bytes read back.
 pub async fn load_config_from_storage(
@@ -36,9 +36,9 @@ async fn load_config_from(
     })?;
 
     use sha2::Digest as _;
-    if sha2::Sha384::digest(&bytes)[..] != want[..] {
+    if sha2::Sha256::digest(&bytes)[..] != want[..] {
         return Err(crate::error::Error::Config(
-            "stored configuration does not match the SHA-384 digest from AYANE_CONFIG_SHA384"
+            "stored configuration does not match the SHA-256 digest from AYANE_CONFIG_SHA256"
                 .into(),
         ));
     }
@@ -50,9 +50,9 @@ async fn load_config_from(
 }
 
 /// Cache key for the configuration document, namespaced by its canonical
-/// base64url SHA-384 digest. Re-encoding from the decoded bytes makes the key
+/// base64url SHA-256 digest. Re-encoding from the decoded bytes makes the key
 /// independent of any whitespace or alternate encoding in the source string.
-fn cache_key(digest: &[u8; 48]) -> String {
+fn cache_key(digest: &[u8; 32]) -> String {
     use base64::Engine;
     format!(
         "config:{}",
@@ -73,16 +73,16 @@ fn decode_storage_config(
         .map_err(|e| crate::error::Error::Config(format!("invalid bootstrap storage config: {e}")))
 }
 
-fn decode_digest(digest: &str) -> crate::error::Result<[u8; 48]> {
+fn decode_digest(digest: &str) -> crate::error::Result<[u8; 32]> {
     use base64::Engine;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(digest.trim())
         .map_err(|e| {
-            crate::error::Error::Config(format!("invalid base64url SHA-384 digest: {e}"))
+            crate::error::Error::Config(format!("invalid base64url SHA-256 digest: {e}"))
         })?;
-    <[u8; 48]>::try_from(raw.as_slice()).map_err(|_| {
+    <[u8; 32]>::try_from(raw.as_slice()).map_err(|_| {
         crate::error::Error::Config(format!(
-            "SHA-384 digest must be 48 bytes, got {}",
+            "SHA-256 digest must be 32 bytes, got {}",
             raw.len()
         ))
     })
@@ -97,7 +97,7 @@ mod tests {
     fn digest_b64url(bytes: &[u8]) -> String {
         use base64::Engine;
         use sha2::Digest as _;
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha384::digest(bytes))
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(bytes))
     }
 
     use crate::storage::Storage as _;
@@ -154,12 +154,12 @@ mod tests {
     #[test]
     fn rejects_malformed_digest() {
         assert!(super::decode_digest("not base64!!!").is_err());
-        // 32 bytes (SHA-256) is the wrong length for SHA-384.
-        let sha256 = {
+        // 48 bytes (SHA-384) is the wrong length for SHA-256.
+        let sha384 = {
             use base64::Engine;
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 32])
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 48])
         };
-        assert!(super::decode_digest(&sha256).is_err());
+        assert!(super::decode_digest(&sha384).is_err());
     }
 
     #[test]
