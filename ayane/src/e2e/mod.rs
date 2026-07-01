@@ -51,6 +51,13 @@ async fn setup() -> Harness {
 async fn setup_with_webhooks(
     webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
 ) -> Harness {
+    setup_with_webhooks_authorized(None, webhooks).await
+}
+
+async fn setup_with_webhooks_authorized(
+    authorized: Option<bool>,
+    webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
+) -> Harness {
     let ca = crate::testca::ec_p256().await;
     let authority = std::sync::Arc::new(
         crate::ca::CertificateAuthority::new(
@@ -73,10 +80,10 @@ async fn setup_with_webhooks(
     let jwk = jwk_from_secret(&provisioner_secret);
     let provisioner = crate::config::ProvisionerConfig {
         name: "prov1".to_string(),
-        kind: "jwk".to_string(),
-        key: jwk,
         audiences: Vec::new(),
         template: None,
+        authorized,
+        kind: crate::config::ProvisionerKind::Jwk { key: jwk },
     };
     let authorizer = std::sync::Arc::new(
         crate::authorizer::jwt::JwtAuthorizer::from_configs(&[provisioner]).unwrap(),
@@ -102,6 +109,34 @@ async fn setup_with_webhooks(
     }
 }
 
+fn cert_not_after_unix(cert: &x509_cert::Certificate) -> i64 {
+    cert.tbs_certificate
+        .validity
+        .not_after
+        .to_unix_duration()
+        .as_secs() as i64
+}
+
+fn cert_san_strings(cert: &x509_cert::Certificate) -> Vec<String> {
+    use const_oid::AssociatedOid;
+    use der::Decode;
+    let mut out = Vec::new();
+    if let Some(exts) = &cert.tbs_certificate.extensions {
+        for ext in exts {
+            if ext.extn_id == x509_cert::ext::pkix::SubjectAltName::OID {
+                let san = x509_cert::ext::pkix::SubjectAltName::from_der(ext.extn_value.as_bytes())
+                    .unwrap();
+                for gn in san.0.iter() {
+                    if let Ok(s) = crate::san::San::try_from(gn) {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 fn jwk_from_secret(secret: &p256::SecretKey) -> jsonwebtoken::jwk::Jwk {
     use p256::elliptic_curve::sec1::ToEncodedPoint;
     let point = secret.public_key().to_encoded_point(false);
@@ -125,7 +160,7 @@ fn make_token(provisioner_pem: &str, audience: &str, subject: &str, sans: &[&str
         iat: now,
         nbf: now - 5,
         exp: now + 300,
-        jti: rand_jti(),
+        jti: Some(rand_jti()),
         cnf: None,
     };
     jsonwebtoken::encode(

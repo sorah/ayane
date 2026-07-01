@@ -17,6 +17,12 @@ pub struct ValidatedToken {
     pub claims: ayane_protocol::OttClaims,
     /// Template name override carried by the provisioner, if any.
     pub template: Option<String>,
+    /// Whether the provisioner authorizes issuance on its own. When `false`, an
+    /// authorize webhook must explicitly grant the request.
+    pub authorized: bool,
+    /// Anti-replay identifier: the token's `jti` when present, otherwise a value
+    /// derived from the token so one-time enforcement still applies.
+    pub replay_id: String,
 }
 
 /// Validates issuance/revocation tokens.

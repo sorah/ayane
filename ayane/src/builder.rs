@@ -24,6 +24,7 @@ pub async fn build_service(
             )));
         }
     }
+    crate::config::validate_provisioner_authorization(config)?;
 
     let key = crate::key_provider::from_config(&config.ca.key).await?;
     let issuer_pem = config.ca.certificate.load()?;

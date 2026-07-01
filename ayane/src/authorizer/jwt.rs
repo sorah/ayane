@@ -12,6 +12,7 @@ struct ProvisionerEntry {
     algorithm: jsonwebtoken::Algorithm,
     audiences: Vec<String>,
     template: Option<String>,
+    authorized: bool,
 }
 
 /// An [`Authorizer`](crate::authorizer::Authorizer) over a fixed set of JWK
@@ -28,16 +29,11 @@ impl JwtAuthorizer {
     ) -> crate::error::Result<Self> {
         let mut provisioners = Vec::with_capacity(configs.len());
         for cfg in configs {
-            if cfg.kind != "jwk" {
-                return Err(crate::error::Error::Config(format!(
-                    "provisioner {:?}: unsupported type {:?} (only \"jwk\")",
-                    cfg.name, cfg.kind
-                )));
-            }
-            let decoding_key = jsonwebtoken::DecodingKey::from_jwk(&cfg.key).map_err(|e| {
+            let crate::config::ProvisionerKind::Jwk { key } = &cfg.kind;
+            let decoding_key = jsonwebtoken::DecodingKey::from_jwk(key).map_err(|e| {
                 crate::error::Error::Config(format!("provisioner {:?}: invalid JWK: {e}", cfg.name))
             })?;
-            let algorithm = algorithm_from_jwk(&cfg.key).ok_or_else(|| {
+            let algorithm = algorithm_from_jwk(key).ok_or_else(|| {
                 crate::error::Error::Config(format!(
                     "provisioner {:?}: cannot determine algorithm from JWK",
                     cfg.name
@@ -49,6 +45,7 @@ impl JwtAuthorizer {
                 algorithm,
                 audiences: cfg.audiences.clone(),
                 template: cfg.template.clone(),
+                authorized: cfg.effective_authorized(),
             });
         }
         Ok(JwtAuthorizer {
@@ -99,6 +96,13 @@ fn algorithm_from_jwk(jwk: &jsonwebtoken::jwk::Jwk) -> Option<jsonwebtoken::Algo
     }
 }
 
+/// Derive a stable anti-replay identifier for a token that carries no `jti`.
+/// Hashing the whole signed token yields a value unique to that credential.
+fn replay_id_from_token(token: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(token.as_bytes()))
+}
+
 /// Read the `iss` claim without verifying the signature, to select the
 /// provisioner whose key should verify the token.
 fn unverified_issuer(token: &str) -> crate::error::Result<String> {
@@ -143,7 +147,9 @@ impl crate::authorizer::Authorizer for JwtAuthorizer {
             let audiences: Vec<&str> = entry.audiences.iter().map(String::as_str).collect();
             validation.set_audience(&audiences);
         }
-        validation.set_required_spec_claims(&["exp", "nbf", "aud", "iss", "sub"]);
+        // `nbf` is validated when present but not required: public OIDC issuers
+        // do not always emit it.
+        validation.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);
         validation.validate_nbf = true;
         validation.validate_aud = true;
         validation.leeway = self.leeway_secs;
@@ -155,10 +161,17 @@ impl crate::authorizer::Authorizer for JwtAuthorizer {
         )
         .map_err(|e| crate::error::Error::Unauthorized(format!("token validation failed: {e}")))?;
 
+        let replay_id = data
+            .claims
+            .jti
+            .clone()
+            .unwrap_or_else(|| replay_id_from_token(token));
         Ok(crate::authorizer::ValidatedToken {
             provisioner: entry.name.clone(),
             claims: data.claims,
             template: entry.template.clone(),
+            authorized: entry.authorized,
+            replay_id,
         })
     }
 
@@ -169,6 +182,7 @@ impl crate::authorizer::Authorizer for JwtAuthorizer {
                 name: p.name.clone(),
                 kind: "jwk".to_string(),
                 audiences: p.audiences.clone(),
+                authorized: p.authorized,
             })
             .collect()
     }
@@ -209,10 +223,10 @@ mod tests {
 
         let cfg = crate::config::ProvisionerConfig {
             name: "prov1".to_string(),
-            kind: "jwk".to_string(),
-            key: jwk,
             audiences: Vec::new(),
             template: None,
+            authorized: None,
+            kind: crate::config::ProvisionerKind::Jwk { key: jwk },
         };
         Fixture {
             authorizer: super::JwtAuthorizer::from_configs(&[cfg]).unwrap(),
@@ -242,7 +256,7 @@ mod tests {
             iat: t,
             nbf: t - 10,
             exp: t + 300,
-            jti: "jti-1".into(),
+            jti: Some("jti-1".into()),
             cnf: None,
         }
     }

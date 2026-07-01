@@ -27,10 +27,12 @@ async fn renewal_preserves_original_eku() {
     };
     let provisioner = crate::config::ProvisionerConfig {
         name: "prov1".to_string(),
-        kind: "jwk".to_string(),
-        key: jwk_from_secret(&provisioner_secret),
         audiences: Vec::new(),
         template: Some("client".to_string()),
+        authorized: None,
+        kind: crate::config::ProvisionerKind::Jwk {
+            key: jwk_from_secret(&provisioner_secret),
+        },
     };
     let authorizer = std::sync::Arc::new(
         crate::authorizer::jwt::JwtAuthorizer::from_configs(&[provisioner]).unwrap(),

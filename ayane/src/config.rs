@@ -169,27 +169,71 @@ pub enum KeyConfig {
     },
 }
 
-/// A token-issuing provisioner (JWK / JWT).
+/// A token-issuing provisioner.
+///
+/// Fields shared by every provisioner type live here; the type-specific
+/// verification configuration is carried by [`kind`](Self::kind), a flattened
+/// enum discriminated by `type` (the same pattern as [`KeyConfig`] and
+/// [`WebhookTarget`]).
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProvisionerConfig {
-    /// Provisioner name; must equal the token `iss` claim.
+    /// Provisioner name; matched against the token `iss`.
     pub name: String,
-    /// Provisioner kind. Only `"jwk"` is supported.
-    #[serde(rename = "type", default = "default_provisioner_type")]
-    pub kind: String,
-    /// The provisioner's public verification key, as a JWK.
-    pub key: jsonwebtoken::jwk::Jwk,
     /// Accepted token `aud` values (in addition to the server's endpoint URLs).
     #[serde(default)]
     pub audiences: Vec<String>,
     /// Template name to use for certificates issued through this provisioner.
     #[serde(default)]
     pub template: Option<String>,
+    /// Whether a validated token alone authorizes issuance. Defaults by kind
+    /// (`jwk` → `true`); an explicit value overrides. When the effective value
+    /// is `false`, an authorize webhook must explicitly grant each request (see
+    /// [`crate::webhook`]).
+    #[serde(default)]
+    pub authorized: Option<bool>,
+    /// Type-specific verification configuration, discriminated by `type`.
+    #[serde(flatten)]
+    pub kind: ProvisionerKind,
 }
 
-fn default_provisioner_type() -> String {
-    "jwk".to_string()
+/// Type-specific provisioner verification configuration.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProvisionerKind {
+    /// A single static verification key, as a JWK. Tokens are trusted purely
+    /// because they were signed by the matching private key.
+    Jwk {
+        /// The provisioner's public verification key.
+        key: jsonwebtoken::jwk::Jwk,
+    },
+}
+
+impl ProvisionerConfig {
+    /// The effective `authorized` value, resolving the kind-based default.
+    pub fn effective_authorized(&self) -> bool {
+        self.authorized
+            .unwrap_or(matches!(self.kind, ProvisionerKind::Jwk { .. }))
+    }
+}
+
+/// Fail closed when an unauthorized provisioner has no webhook that could ever
+/// grant it: such a provisioner can never issue, which is a misconfiguration.
+pub fn validate_provisioner_authorization(cfg: &Config) -> crate::error::Result<()> {
+    for provisioner in &cfg.provisioners {
+        if provisioner.effective_authorized() {
+            continue;
+        }
+        let has_webhook = cfg.webhooks.iter().any(|w| {
+            w.provisioners.is_empty() || w.provisioners.iter().any(|p| p == &provisioner.name)
+        });
+        if !has_webhook {
+            return Err(crate::error::Error::Config(format!(
+                "provisioner {:?} is not authorized but no webhook applies to it",
+                provisioner.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A webhook definition. A single webhook may both authorize (deny) and enrich
@@ -484,5 +528,75 @@ mod tests {
         // Neither `file` nor `pem` is an error now (caught at parse time).
         let text = r#"{ "ca": { "certificate": {}, "key": { "type": "file", "file": "k" } } }"#;
         assert!(super::Config::from_json(text).is_err());
+    }
+
+    const EC_JWK: &str = r#"{ "kty": "EC", "crv": "P-256", "alg": "ES256",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" }"#;
+
+    fn config_with(provisioners: &str, webhooks: &str) -> super::Config {
+        let text = format!(
+            r#"{{
+                "ca": {{ "certificate": {{ "file": "ca.crt" }}, "key": {{ "type": "file", "file": "ca.key" }} }},
+                "provisioners": {provisioners},
+                "webhooks": {webhooks}
+            }}"#
+        );
+        super::Config::from_json(&text).expect("config parses")
+    }
+
+    #[test]
+    fn jwk_provisioner_defaults_to_authorized() {
+        let provisioners = format!(r#"[{{ "name": "p", "type": "jwk", "key": {EC_JWK} }}]"#);
+        let config = config_with(&provisioners, "[]");
+        assert!(matches!(
+            config.provisioners[0].kind,
+            super::ProvisionerKind::Jwk { .. }
+        ));
+        assert!(config.provisioners[0].effective_authorized());
+    }
+
+    #[test]
+    fn authorized_flag_overrides_kind_default() {
+        let provisioners =
+            format!(r#"[{{ "name": "p", "type": "jwk", "authorized": false, "key": {EC_JWK} }}]"#);
+        let config = config_with(&provisioners, "[]");
+        assert!(!config.provisioners[0].effective_authorized());
+    }
+
+    #[test]
+    fn unauthorized_provisioner_requires_an_applicable_webhook() {
+        let provisioners =
+            format!(r#"[{{ "name": "p", "type": "jwk", "authorized": false, "key": {EC_JWK} }}]"#);
+
+        let no_webhook = config_with(&provisioners, "[]");
+        assert!(super::validate_provisioner_authorization(&no_webhook).is_err());
+
+        let scoped = r#"[{ "name": "gate", "provisioners": ["p"],
+            "target": { "type": "http", "url": "https://h.example/hook" } }]"#;
+        assert!(
+            super::validate_provisioner_authorization(&config_with(&provisioners, scoped)).is_ok()
+        );
+
+        // A webhook that applies to all provisioners (empty list) also qualifies.
+        let all = r#"[{ "name": "gate",
+            "target": { "type": "http", "url": "https://h.example/hook" } }]"#;
+        assert!(
+            super::validate_provisioner_authorization(&config_with(&provisioners, all)).is_ok()
+        );
+
+        // A webhook scoped to a different provisioner does not.
+        let other = r#"[{ "name": "gate", "provisioners": ["other"],
+            "target": { "type": "http", "url": "https://h.example/hook" } }]"#;
+        assert!(
+            super::validate_provisioner_authorization(&config_with(&provisioners, other)).is_err()
+        );
+    }
+
+    #[test]
+    fn authorized_provisioner_needs_no_webhook() {
+        let provisioners = format!(r#"[{{ "name": "p", "type": "jwk", "key": {EC_JWK} }}]"#);
+        let config = config_with(&provisioners, "[]");
+        assert!(super::validate_provisioner_authorization(&config).is_ok());
     }
 }
