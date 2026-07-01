@@ -35,7 +35,7 @@ async fn renewal_preserves_original_eku() {
         },
     };
     let authorizer = std::sync::Arc::new(
-        crate::authorizer::jwt::JwtAuthorizer::from_configs(&[provisioner]).unwrap(),
+        crate::authorizer::jwt::JwkAuthorizer::from_configs(&[provisioner]).unwrap(),
     );
 
     let mut templates = std::collections::HashMap::new();

@@ -177,7 +177,8 @@ pub enum KeyConfig {
 /// [`WebhookTarget`]).
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProvisionerConfig {
-    /// Provisioner name; matched against the token `iss`.
+    /// Provisioner name; matched against the token `iss` (or, for `jwks`, the
+    /// resolved issuer).
     pub name: String,
     /// Accepted token `aud` values (in addition to the server's endpoint URLs).
     #[serde(default)]
@@ -186,9 +187,9 @@ pub struct ProvisionerConfig {
     #[serde(default)]
     pub template: Option<String>,
     /// Whether a validated token alone authorizes issuance. Defaults by kind
-    /// (`jwk` → `true`); an explicit value overrides. When the effective value
-    /// is `false`, an authorize webhook must explicitly grant each request (see
-    /// [`crate::webhook`]).
+    /// (`jwk` → `true`, `jwks` → `false`); an explicit value overrides. When the
+    /// effective value is `false`, an authorize webhook must explicitly grant
+    /// each request (see [`crate::webhook`]).
     #[serde(default)]
     pub authorized: Option<bool>,
     /// Type-specific verification configuration, discriminated by `type`.
@@ -206,13 +207,62 @@ pub enum ProvisionerKind {
         /// The provisioner's public verification key.
         key: jsonwebtoken::jwk::Jwk,
     },
+    /// A remote JSON Web Key Set fetched from a URL or discovered via OIDC.
+    /// Used to validate tokens minted by an external issuer (e.g. a public OIDC
+    /// provider); such tokens only *authenticate* — see [`authorized`].
+    ///
+    /// [`authorized`]: ProvisionerConfig::authorized
+    Jwks {
+        /// Where to fetch verification keys and which issuer to expect.
+        jwks: JwksConfig,
+    },
 }
+
+/// Configuration for a `jwks` provisioner: where to fetch verification keys and
+/// which token issuer to expect.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JwksConfig {
+    /// URL of a JWK Set document. Mutually exclusive with
+    /// [`openid_configuration_url`](Self::openid_configuration_url).
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+    /// URL of an OpenID Connect discovery document
+    /// (`.well-known/openid-configuration`); its `jwks_uri` is followed to the
+    /// key set. Mutually exclusive with [`jwks_url`](Self::jwks_url).
+    #[serde(default)]
+    pub openid_configuration_url: Option<String>,
+    /// The token `iss` value this provisioner accepts. When unset it is derived:
+    /// for `openid_configuration_url`, by stripping the
+    /// `/.well-known/openid-configuration` suffix; otherwise it falls back to the
+    /// provisioner `name`.
+    #[serde(default)]
+    pub issuer: Option<String>,
+}
+
+/// The `.well-known` suffix an OIDC discovery URL appends to its issuer.
+const OIDC_DISCOVERY_SUFFIX: &str = "/.well-known/openid-configuration";
 
 impl ProvisionerConfig {
     /// The effective `authorized` value, resolving the kind-based default.
     pub fn effective_authorized(&self) -> bool {
         self.authorized
             .unwrap_or(matches!(self.kind, ProvisionerKind::Jwk { .. }))
+    }
+}
+
+impl JwksConfig {
+    /// The token issuer this provisioner expects (see [`issuer`](Self::issuer)).
+    pub fn resolved_issuer(&self, name: &str) -> String {
+        if let Some(issuer) = &self.issuer {
+            return issuer.clone();
+        }
+        if let Some(url) = &self.openid_configuration_url
+            && let Some(issuer) = url.strip_suffix(OIDC_DISCOVERY_SUFFIX)
+        {
+            return issuer.to_string();
+        }
+        name.to_string()
     }
 }
 
@@ -463,10 +513,19 @@ mod tests {
     fn parses_example_config() {
         let text = include_str!("../../examples/ayane.example.json");
         let config = super::Config::from_json(text).expect("example config parses");
-        assert_eq!(config.provisioners.len(), 1);
+        assert_eq!(config.provisioners.len(), 2);
         assert_eq!(config.provisioners[0].name, "ci-issuer");
+        assert!(config.provisioners[0].effective_authorized());
+        assert_eq!(config.provisioners[1].name, "github-actions");
+        assert!(matches!(
+            config.provisioners[1].kind,
+            super::ProvisionerKind::Jwks { .. }
+        ));
+        // A jwks provisioner defaults to unauthorized and is gated by a webhook.
+        assert!(!config.provisioners[1].effective_authorized());
+        super::validate_provisioner_authorization(&config).expect("example is fail-closed clean");
         assert!(config.templates.contains_key("server"));
-        assert_eq!(config.webhooks.len(), 2);
+        assert_eq!(config.webhooks.len(), 3);
         assert!(matches!(
             config.storage,
             super::StorageConfig::Dynamodb { .. }
@@ -510,12 +569,12 @@ mod tests {
         let text = include_str!("../../examples/ayane.example.json");
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
         let config = super::Config::from_base64url(&encoded).expect("base64url config parses");
-        assert_eq!(config.provisioners.len(), 1);
+        assert_eq!(config.provisioners.len(), 2);
 
         // A trailing newline (as an environment variable may carry) is tolerated.
         let config = super::Config::from_base64url(&format!("{encoded}\n"))
             .expect("trailing newline tolerated");
-        assert_eq!(config.provisioners.len(), 1);
+        assert_eq!(config.provisioners.len(), 2);
     }
 
     #[test]

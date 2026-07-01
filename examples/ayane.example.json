@@ -24,6 +24,15 @@
         "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
         "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
       }
+    },
+    {
+      "name": "github-actions",
+      "type": "jwks",
+      "audiences": ["https://ca.example.com"],
+      "template": "server",
+      "jwks": {
+        "openid_configuration_url": "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
+      }
     }
   ],
 
@@ -62,6 +71,16 @@
         "type": "lambda",
         "function_name": "ayane-enrich",
         "region": "us-east-1"
+      }
+    },
+    {
+      "name": "authorize-github",
+      "provisioners": ["github-actions"],
+      "timeout": "5s",
+      "target": {
+        "type": "http",
+        "url": "https://policy.internal.example.com/authorize-github",
+        "secret": "c2VjcmV0LWhtYWMta2V5"
       }
     }
   ],

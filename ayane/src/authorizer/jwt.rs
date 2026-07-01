@@ -1,54 +1,50 @@
-//! JWT/JWK-based [`Authorizer`](crate::authorizer::Authorizer) implementation.
+//! JWK-based [`Authorizer`](crate::authorizer::Authorizer) implementation.
 //!
-//! Each provisioner is a name plus a public JWK. A token is matched to a
+//! Each provisioner is a name plus a static public JWK. A token is matched to a
 //! provisioner by its `iss` claim, then verified with that provisioner's key.
-//! The accepted algorithm is pinned to the one implied by the JWK, which closes
-//! the JWT algorithm-confusion class of attacks (an attacker cannot downgrade an
-//! EC verification key to HMAC, etc.).
+//! Signature and claim policy live in [`crate::authorizer::validate_signed`],
+//! which pins the accepted algorithm to the JWK's key type — closing the JWT
+//! algorithm-confusion class of attacks.
 
 struct ProvisionerEntry {
     name: String,
-    decoding_key: jsonwebtoken::DecodingKey,
-    algorithm: jsonwebtoken::Algorithm,
+    key: crate::authorizer::SigningKey,
     audiences: Vec<String>,
     template: Option<String>,
     authorized: bool,
 }
 
-/// An [`Authorizer`](crate::authorizer::Authorizer) over a fixed set of JWK
-/// provisioners.
-pub struct JwtAuthorizer {
+/// An [`Authorizer`](crate::authorizer::Authorizer) over a fixed set of `jwk`
+/// provisioners. `jwks` provisioners are handled by
+/// [`JwksAuthorizer`](crate::authorizer::jwks::JwksAuthorizer).
+pub struct JwkAuthorizer {
     provisioners: Vec<ProvisionerEntry>,
     leeway_secs: u64,
 }
 
-impl JwtAuthorizer {
-    /// Build from provisioner configuration.
+impl JwkAuthorizer {
+    /// Build from provisioner configuration, keeping only `jwk` provisioners.
     pub fn from_configs(
         configs: &[crate::config::ProvisionerConfig],
     ) -> crate::error::Result<Self> {
-        let mut provisioners = Vec::with_capacity(configs.len());
+        let mut provisioners = Vec::new();
         for cfg in configs {
-            let crate::config::ProvisionerKind::Jwk { key } = &cfg.kind;
-            let decoding_key = jsonwebtoken::DecodingKey::from_jwk(key).map_err(|e| {
-                crate::error::Error::Config(format!("provisioner {:?}: invalid JWK: {e}", cfg.name))
-            })?;
-            let algorithm = algorithm_from_jwk(key).ok_or_else(|| {
-                crate::error::Error::Config(format!(
-                    "provisioner {:?}: cannot determine algorithm from JWK",
-                    cfg.name
-                ))
+            let key = match &cfg.kind {
+                crate::config::ProvisionerKind::Jwk { key } => key,
+                crate::config::ProvisionerKind::Jwks { .. } => continue,
+            };
+            let key = crate::authorizer::signing_key_from_jwk(key).map_err(|e| {
+                crate::error::Error::Config(format!("provisioner {:?}: {e}", cfg.name))
             })?;
             provisioners.push(ProvisionerEntry {
                 name: cfg.name.clone(),
-                decoding_key,
-                algorithm,
+                key,
                 audiences: cfg.audiences.clone(),
                 template: cfg.template.clone(),
                 authorized: cfg.effective_authorized(),
             });
         }
-        Ok(JwtAuthorizer {
+        Ok(JwkAuthorizer {
             provisioners,
             leeway_secs: 60,
         })
@@ -57,118 +53,37 @@ impl JwtAuthorizer {
     fn find(&self, issuer: &str) -> Option<&ProvisionerEntry> {
         self.provisioners.iter().find(|p| p.name == issuer)
     }
-}
 
-/// Map a JWK to the single JWT algorithm permitted for it.
-fn algorithm_from_jwk(jwk: &jsonwebtoken::jwk::Jwk) -> Option<jsonwebtoken::Algorithm> {
-    match &jwk.algorithm {
-        jsonwebtoken::jwk::AlgorithmParameters::EllipticCurve(ec) => match ec.curve {
-            jsonwebtoken::jwk::EllipticCurve::P256 => Some(jsonwebtoken::Algorithm::ES256),
-            jsonwebtoken::jwk::EllipticCurve::P384 => Some(jsonwebtoken::Algorithm::ES384),
-            _ => None,
-        },
-        jsonwebtoken::jwk::AlgorithmParameters::RSA(_) => {
-            // Honor an explicit RSA algorithm hint; otherwise default to RS256.
-            match jwk.common.key_algorithm {
-                Some(jsonwebtoken::jwk::KeyAlgorithm::RS384) => {
-                    Some(jsonwebtoken::Algorithm::RS384)
-                }
-                Some(jsonwebtoken::jwk::KeyAlgorithm::RS512) => {
-                    Some(jsonwebtoken::Algorithm::RS512)
-                }
-                Some(jsonwebtoken::jwk::KeyAlgorithm::PS256) => {
-                    Some(jsonwebtoken::Algorithm::PS256)
-                }
-                Some(jsonwebtoken::jwk::KeyAlgorithm::PS384) => {
-                    Some(jsonwebtoken::Algorithm::PS384)
-                }
-                Some(jsonwebtoken::jwk::KeyAlgorithm::PS512) => {
-                    Some(jsonwebtoken::Algorithm::PS512)
-                }
-                _ => Some(jsonwebtoken::Algorithm::RS256),
-            }
-        }
-        jsonwebtoken::jwk::AlgorithmParameters::OctetKeyPair(okp) => match okp.curve {
-            jsonwebtoken::jwk::EllipticCurve::Ed25519 => Some(jsonwebtoken::Algorithm::EdDSA),
-            _ => None,
-        },
-        _ => None,
+    /// The issuers (provisioner names) this authorizer handles, for the
+    /// [`Authorizers`](crate::authorizer::Authorizers) router.
+    pub fn issuers(&self) -> Vec<String> {
+        self.provisioners.iter().map(|p| p.name.clone()).collect()
     }
 }
 
-/// Derive a stable anti-replay identifier for a token that carries no `jti`.
-/// Hashing the whole signed token yields a value unique to that credential.
-fn replay_id_from_token(token: &str) -> String {
-    use sha2::Digest;
-    hex::encode(sha2::Sha256::digest(token.as_bytes()))
-}
-
-/// Read the `iss` claim without verifying the signature, to select the
-/// provisioner whose key should verify the token.
-fn unverified_issuer(token: &str) -> crate::error::Result<String> {
-    use base64::Engine;
-    let payload = token
-        .split('.')
-        .nth(1)
-        .ok_or_else(|| crate::error::Error::Unauthorized("malformed token".into()))?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| crate::error::Error::Unauthorized("malformed token payload".into()))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| crate::error::Error::Unauthorized("malformed token payload".into()))?;
-    value
-        .get("iss")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| crate::error::Error::Unauthorized("token missing iss claim".into()))
-}
-
 #[async_trait::async_trait]
-impl crate::authorizer::Authorizer for JwtAuthorizer {
+impl crate::authorizer::Authorizer for JwkAuthorizer {
     async fn validate(
         &self,
         token: &str,
         audience: &str,
     ) -> crate::error::Result<crate::authorizer::ValidatedToken> {
-        let issuer = unverified_issuer(token)?;
+        let issuer = crate::authorizer::unverified_issuer(token)?;
         let entry = self.find(&issuer).ok_or_else(|| {
             crate::error::Error::Unauthorized(format!("unknown provisioner {issuer:?}"))
         })?;
 
-        let mut validation = jsonwebtoken::Validation::new(entry.algorithm);
-        validation.set_issuer(&[entry.name.as_str()]);
-        // Bind the token to the request endpoint by default: require `aud` to
-        // equal the per-endpoint `audience` (the request URL). An explicit,
-        // non-empty provisioner audience list opts into a fixed allowlist
-        // instead (the operator is then responsible for endpoint scoping).
-        if entry.audiences.is_empty() {
-            validation.set_audience(&[audience]);
-        } else {
-            let audiences: Vec<&str> = entry.audiences.iter().map(String::as_str).collect();
-            validation.set_audience(&audiences);
-        }
-        // `nbf` is validated when present but not required: public OIDC issuers
-        // do not always emit it.
-        validation.set_required_spec_claims(&["exp", "aud", "iss", "sub"]);
-        validation.validate_nbf = true;
-        validation.validate_aud = true;
-        validation.leeway = self.leeway_secs;
-
-        let data = jsonwebtoken::decode::<ayane_protocol::OttClaims>(
+        let (claims, replay_id) = crate::authorizer::validate_signed(
             token,
-            &entry.decoding_key,
-            &validation,
-        )
-        .map_err(|e| crate::error::Error::Unauthorized(format!("token validation failed: {e}")))?;
-
-        let replay_id = data
-            .claims
-            .jti
-            .clone()
-            .unwrap_or_else(|| replay_id_from_token(token));
+            audience,
+            &entry.name,
+            &entry.audiences,
+            &entry.key,
+            self.leeway_secs,
+        )?;
         Ok(crate::authorizer::ValidatedToken {
             provisioner: entry.name.clone(),
-            claims: data.claims,
+            claims,
             template: entry.template.clone(),
             authorized: entry.authorized,
             replay_id,
@@ -198,7 +113,7 @@ mod tests {
     }
 
     struct Fixture {
-        authorizer: super::JwtAuthorizer,
+        authorizer: super::JwkAuthorizer,
         encoding_key: jsonwebtoken::EncodingKey,
     }
 
@@ -229,7 +144,7 @@ mod tests {
             kind: crate::config::ProvisionerKind::Jwk { key: jwk },
         };
         Fixture {
-            authorizer: super::JwtAuthorizer::from_configs(&[cfg]).unwrap(),
+            authorizer: super::JwkAuthorizer::from_configs(&[cfg]).unwrap(),
             encoding_key,
         }
     }
