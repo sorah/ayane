@@ -7,8 +7,8 @@
 //! [`crate::storage`], using the [`jti`](ayane_protocol::OttClaims::jti) this
 //! returns.
 
-pub mod jwks;
-pub mod jwt;
+mod jwk;
+mod jwks;
 
 /// A token that has passed signature and registered-claim validation.
 pub struct ValidatedToken {
@@ -36,6 +36,141 @@ pub trait Authorizer: Send + Sync {
 
     /// Public, non-secret description of configured provisioners.
     fn provisioners(&self) -> Vec<ayane_protocol::ProvisionerInfo>;
+}
+
+/// The normalized result of authenticating a presented token.
+pub(crate) struct VerifiedToken {
+    /// Decoded, verified claims.
+    pub claims: ayane_protocol::OttClaims,
+    /// Anti-replay identifier (the token's `jti`, or a value derived from it).
+    pub replay_id: String,
+}
+
+/// Non-secret description of a verifier, for `GET /v1/provisioners`.
+pub(crate) struct VerifierInfo {
+    /// Scheme name, e.g. `"jwk"` or `"jwks"`.
+    pub kind: &'static str,
+    /// Accepted token audiences.
+    pub audiences: Vec<String>,
+}
+
+/// Scheme-specific verification of a presented bearer token. One implementation
+/// per authentication scheme (a static JWK, a remote JWKS, ...). This layer only
+/// *authenticates* the token and extracts its claims — authorization (the
+/// `authorized` flag and webhook gating) is applied by [`ProvisionerAuthorizer`]
+/// and [`crate::service`], not here.
+#[async_trait::async_trait]
+pub(crate) trait TokenVerifier: Send + Sync {
+    /// Unauthenticated pre-check used to route a token to its provisioner (for
+    /// JWT schemes, the unverified `iss`). Must not depend on the signature.
+    fn matches(&self, token: &str) -> bool;
+
+    /// Authenticate `token`, binding it to `audience`, and return its claims.
+    async fn verify(&self, token: &str, audience: &str) -> crate::error::Result<VerifiedToken>;
+
+    /// Non-secret description for public listing.
+    fn describe(&self) -> VerifierInfo;
+}
+
+/// A configured provisioner: CA-level policy (name, template, whether a verified
+/// token alone authorizes issuance) plus the scheme-specific [`TokenVerifier`]
+/// that authenticates its tokens.
+struct Provisioner {
+    name: String,
+    template: Option<String>,
+    authorized: bool,
+    verifier: Box<dyn TokenVerifier>,
+}
+
+/// An [`Authorizer`] over a flat set of provisioners. A token is routed to the
+/// first provisioner whose verifier claims it, then verified. The set is small,
+/// so a linear scan is used.
+pub struct ProvisionerAuthorizer {
+    provisioners: Vec<Provisioner>,
+}
+
+impl ProvisionerAuthorizer {
+    /// Build every provisioner from configuration.
+    pub fn from_configs(
+        configs: &[crate::config::ProvisionerConfig],
+    ) -> crate::error::Result<Self> {
+        // One shared HTTP client for every jwks provisioner, built only when one
+        // exists so a key-only deployment never loads the HTTP stack.
+        let http = if configs
+            .iter()
+            .any(|c| matches!(c.kind, crate::config::ProvisionerKind::Jwks { .. }))
+        {
+            Some(jwks::http_client()?)
+        } else {
+            None
+        };
+
+        let mut seen_issuers = std::collections::HashSet::new();
+        let mut provisioners = Vec::with_capacity(configs.len());
+        for cfg in configs {
+            let issuer = cfg.expected_issuer();
+            if !seen_issuers.insert(issuer.clone()) {
+                return Err(crate::error::Error::Config(format!(
+                    "provisioner issuer {issuer:?} is claimed by more than one provisioner"
+                )));
+            }
+            let verifier: Box<dyn TokenVerifier> = match &cfg.kind {
+                crate::config::ProvisionerKind::Jwk { key } => {
+                    Box::new(jwk::JwkVerifier::new(cfg, key)?)
+                }
+                crate::config::ProvisionerKind::Jwks { jwks } => {
+                    let client = http
+                        .clone()
+                        .expect("http client is built when a jwks provisioner exists");
+                    Box::new(jwks::JwksVerifier::new(cfg, jwks, client)?)
+                }
+            };
+            provisioners.push(Provisioner {
+                name: cfg.name.clone(),
+                template: cfg.template.clone(),
+                authorized: cfg.effective_authorized(),
+                verifier,
+            });
+        }
+        Ok(ProvisionerAuthorizer { provisioners })
+    }
+}
+
+#[async_trait::async_trait]
+impl Authorizer for ProvisionerAuthorizer {
+    async fn validate(&self, token: &str, audience: &str) -> crate::error::Result<ValidatedToken> {
+        let provisioner = self
+            .provisioners
+            .iter()
+            .find(|p| p.verifier.matches(token))
+            .ok_or_else(|| {
+                let issuer = unverified_issuer(token).unwrap_or_else(|_| "<unknown>".to_string());
+                crate::error::Error::Unauthorized(format!("unknown provisioner {issuer:?}"))
+            })?;
+        let verified = provisioner.verifier.verify(token, audience).await?;
+        Ok(ValidatedToken {
+            provisioner: provisioner.name.clone(),
+            claims: verified.claims,
+            template: provisioner.template.clone(),
+            authorized: provisioner.authorized,
+            replay_id: verified.replay_id,
+        })
+    }
+
+    fn provisioners(&self) -> Vec<ayane_protocol::ProvisionerInfo> {
+        self.provisioners
+            .iter()
+            .map(|p| {
+                let info = p.verifier.describe();
+                ayane_protocol::ProvisionerInfo {
+                    name: p.name.clone(),
+                    kind: info.kind.to_string(),
+                    audiences: info.audiences,
+                    authorized: p.authorized,
+                }
+            })
+            .collect()
+    }
 }
 
 /// A verification key paired with the single JWS algorithm permitted for it. The
@@ -167,52 +302,4 @@ pub(crate) fn validate_signed(
         .clone()
         .unwrap_or_else(|| replay_id_from_token(token));
     Ok((data.claims, replay_id))
-}
-
-/// Dispatches token validation to the sub-authorizer that owns the token's
-/// issuer. The provider set is small, so a linear scan is used rather than a map.
-pub struct Authorizers {
-    providers: Vec<(Vec<String>, std::sync::Arc<dyn Authorizer>)>,
-}
-
-impl Authorizers {
-    /// Assemble a router over `(issuers, authorizer)` pairs. An issuer claimed by
-    /// more than one provider is a configuration error.
-    pub fn new(
-        providers: Vec<(Vec<String>, std::sync::Arc<dyn Authorizer>)>,
-    ) -> crate::error::Result<Self> {
-        let mut seen = std::collections::HashSet::new();
-        for (issuers, _) in &providers {
-            for issuer in issuers {
-                if !seen.insert(issuer.clone()) {
-                    return Err(crate::error::Error::Config(format!(
-                        "provisioner issuer {issuer:?} is claimed by more than one provisioner"
-                    )));
-                }
-            }
-        }
-        Ok(Authorizers { providers })
-    }
-}
-
-#[async_trait::async_trait]
-impl Authorizer for Authorizers {
-    async fn validate(&self, token: &str, audience: &str) -> crate::error::Result<ValidatedToken> {
-        let issuer = unverified_issuer(token)?;
-        for (issuers, provider) in &self.providers {
-            if issuers.iter().any(|i| i == &issuer) {
-                return provider.validate(token, audience).await;
-            }
-        }
-        Err(crate::error::Error::Unauthorized(format!(
-            "unknown provisioner {issuer:?}"
-        )))
-    }
-
-    fn provisioners(&self) -> Vec<ayane_protocol::ProvisionerInfo> {
-        self.providers
-            .iter()
-            .flat_map(|(_, provider)| provider.provisioners())
-            .collect()
-    }
 }

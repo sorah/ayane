@@ -46,23 +46,9 @@ pub async fn build_service(
         roots,
     )?);
 
-    let jwk_authorizer = std::sync::Arc::new(crate::authorizer::jwt::JwkAuthorizer::from_configs(
-        &config.provisioners,
-    )?);
-    let jwks_authorizer = std::sync::Arc::new(
-        crate::authorizer::jwks::JwksAuthorizer::from_configs(&config.provisioners)?,
+    let authorizer: std::sync::Arc<dyn crate::authorizer::Authorizer> = std::sync::Arc::new(
+        crate::authorizer::ProvisionerAuthorizer::from_configs(&config.provisioners)?,
     );
-    let authorizer: std::sync::Arc<dyn crate::authorizer::Authorizer> =
-        std::sync::Arc::new(crate::authorizer::Authorizers::new(vec![
-            (
-                jwk_authorizer.issuers(),
-                jwk_authorizer as std::sync::Arc<dyn crate::authorizer::Authorizer>,
-            ),
-            (
-                jwks_authorizer.issuers(),
-                jwks_authorizer as std::sync::Arc<dyn crate::authorizer::Authorizer>,
-            ),
-        ])?);
 
     let storage = crate::storage::from_config(&config.storage).await?;
 

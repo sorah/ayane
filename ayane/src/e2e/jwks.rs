@@ -125,7 +125,7 @@ async fn setup(
         },
     };
     let authorizer = std::sync::Arc::new(
-        crate::authorizer::jwks::JwksAuthorizer::from_configs(&[provisioner]).unwrap(),
+        crate::authorizer::ProvisionerAuthorizer::from_configs(&[provisioner]).unwrap(),
     );
     let storage: std::sync::Arc<dyn crate::storage::Storage> =
         std::sync::Arc::new(crate::storage::sqlite::SqliteStorage::open_in_memory().unwrap());

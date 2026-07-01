@@ -87,7 +87,7 @@ async fn setup_with_webhooks_authorized(
         kind: crate::config::ProvisionerKind::Jwk { key: jwk },
     };
     let authorizer = std::sync::Arc::new(
-        crate::authorizer::jwt::JwkAuthorizer::from_configs(&[provisioner]).unwrap(),
+        crate::authorizer::ProvisionerAuthorizer::from_configs(&[provisioner]).unwrap(),
     );
     let storage: std::sync::Arc<dyn crate::storage::Storage> =
         std::sync::Arc::new(crate::storage::sqlite::SqliteStorage::open_in_memory().unwrap());

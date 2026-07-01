@@ -1,4 +1,4 @@
-//! JWKS-based [`Authorizer`](crate::authorizer::Authorizer) implementation.
+//! JWKS-based [`TokenVerifier`](crate::authorizer::TokenVerifier).
 //!
 //! A `jwks` provisioner validates tokens minted by an external issuer whose
 //! verification keys are published as a JSON Web Key Set — fetched directly from
@@ -204,114 +204,77 @@ impl JwksSource {
     }
 }
 
-struct JwksEntry {
-    name: String,
+/// Verifies tokens from a remote JWK Set (a `jwks_url` or OIDC discovery).
+pub(crate) struct JwksVerifier {
     issuer: String,
     audiences: Vec<String>,
-    template: Option<String>,
-    authorized: bool,
     source: JwksSource,
-}
-
-/// An [`Authorizer`](crate::authorizer::Authorizer) over `jwks` provisioners.
-pub struct JwksAuthorizer {
-    entries: Vec<JwksEntry>,
     leeway_secs: u64,
 }
 
-impl JwksAuthorizer {
-    /// Build from provisioner configuration, keeping only `jwks` provisioners.
-    pub fn from_configs(
-        configs: &[crate::config::ProvisionerConfig],
+impl JwksVerifier {
+    pub(crate) fn new(
+        cfg: &crate::config::ProvisionerConfig,
+        jwks: &crate::config::JwksConfig,
+        client: reqwest::Client,
     ) -> crate::error::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| crate::error::Error::Config(format!("jwks http client: {e}")))?;
-        let mut entries = Vec::new();
-        for cfg in configs {
-            let jwks = match &cfg.kind {
-                crate::config::ProvisionerKind::Jwks { jwks } => jwks,
-                crate::config::ProvisionerKind::Jwk { .. } => continue,
-            };
-            if cfg.audiences.is_empty() {
-                return Err(crate::error::Error::Config(format!(
-                    "provisioner {:?}: `jwks` requires a non-empty `audiences`",
-                    cfg.name
-                )));
-            }
-            let issuer = jwks.resolved_issuer(&cfg.name);
-            let source = JwksSource::new(issuer.clone(), jwks, client.clone(), &cfg.name)?;
-            entries.push(JwksEntry {
-                name: cfg.name.clone(),
-                issuer,
-                audiences: cfg.audiences.clone(),
-                template: cfg.template.clone(),
-                authorized: cfg.effective_authorized(),
-                source,
-            });
+        if cfg.audiences.is_empty() {
+            return Err(crate::error::Error::Config(format!(
+                "provisioner {:?}: `jwks` requires a non-empty `audiences`",
+                cfg.name
+            )));
         }
-        Ok(JwksAuthorizer {
-            entries,
+        let issuer = jwks.resolved_issuer(&cfg.name);
+        let source = JwksSource::new(issuer.clone(), jwks, client, &cfg.name)?;
+        Ok(JwksVerifier {
+            issuer,
+            audiences: cfg.audiences.clone(),
+            source,
             leeway_secs: 60,
         })
-    }
-
-    fn find(&self, issuer: &str) -> Option<&JwksEntry> {
-        self.entries.iter().find(|e| e.issuer == issuer)
-    }
-
-    /// The issuers this authorizer handles, for the
-    /// [`Authorizers`](crate::authorizer::Authorizers) router.
-    pub fn issuers(&self) -> Vec<String> {
-        self.entries.iter().map(|e| e.issuer.clone()).collect()
     }
 }
 
 #[async_trait::async_trait]
-impl crate::authorizer::Authorizer for JwksAuthorizer {
-    async fn validate(
+impl crate::authorizer::TokenVerifier for JwksVerifier {
+    fn matches(&self, token: &str) -> bool {
+        crate::authorizer::unverified_issuer(token).ok().as_deref() == Some(self.issuer.as_str())
+    }
+
+    async fn verify(
         &self,
         token: &str,
         audience: &str,
-    ) -> crate::error::Result<crate::authorizer::ValidatedToken> {
-        let issuer = crate::authorizer::unverified_issuer(token)?;
-        let entry = self.find(&issuer).ok_or_else(|| {
-            crate::error::Error::Unauthorized(format!("unknown provisioner {issuer:?}"))
-        })?;
+    ) -> crate::error::Result<crate::authorizer::VerifiedToken> {
         let header = jsonwebtoken::decode_header(token).map_err(|e| {
             crate::error::Error::Unauthorized(format!("malformed token header: {e}"))
         })?;
-        let key = entry.source.resolve(header.kid.as_deref()).await?;
-
+        let key = self.source.resolve(header.kid.as_deref()).await?;
         let (claims, replay_id) = crate::authorizer::validate_signed(
             token,
             audience,
-            &entry.issuer,
-            &entry.audiences,
+            &self.issuer,
+            &self.audiences,
             &key,
             self.leeway_secs,
         )?;
-        Ok(crate::authorizer::ValidatedToken {
-            provisioner: entry.name.clone(),
-            claims,
-            template: entry.template.clone(),
-            authorized: entry.authorized,
-            replay_id,
-        })
+        Ok(crate::authorizer::VerifiedToken { claims, replay_id })
     }
 
-    fn provisioners(&self) -> Vec<ayane_protocol::ProvisionerInfo> {
-        self.entries
-            .iter()
-            .map(|e| ayane_protocol::ProvisionerInfo {
-                name: e.name.clone(),
-                kind: "jwks".to_string(),
-                audiences: e.audiences.clone(),
-                authorized: e.authorized,
-            })
-            .collect()
+    fn describe(&self) -> crate::authorizer::VerifierInfo {
+        crate::authorizer::VerifierInfo {
+            kind: "jwks",
+            audiences: self.audiences.clone(),
+        }
     }
+}
+
+/// Build the shared HTTP client used by every `jwks` verifier.
+pub(crate) fn http_client() -> crate::error::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| crate::error::Error::Config(format!("jwks http client: {e}")))
 }
 
 /// Pick the verification key for a token: by `kid` when the header carries one,
@@ -440,7 +403,7 @@ mod tests {
     #[test]
     fn from_configs_accepts_either_url_form() {
         assert!(
-            super::JwksAuthorizer::from_configs(&[jwks_config(
+            crate::authorizer::ProvisionerAuthorizer::from_configs(&[jwks_config(
                 Some("https://idp.example.com/keys"),
                 None,
                 Some("https://idp.example.com"),
@@ -448,7 +411,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            super::JwksAuthorizer::from_configs(&[jwks_config(
+            crate::authorizer::ProvisionerAuthorizer::from_configs(&[jwks_config(
                 None,
                 Some(
                     "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
@@ -463,7 +426,7 @@ mod tests {
     fn from_configs_rejects_invalid_combinations() {
         // Both URL forms set.
         assert!(
-            super::JwksAuthorizer::from_configs(&[jwks_config(
+            crate::authorizer::ProvisionerAuthorizer::from_configs(&[jwks_config(
                 Some("https://idp.example.com/keys"),
                 Some("https://idp.example.com/.well-known/openid-configuration"),
                 None,
@@ -471,10 +434,15 @@ mod tests {
             .is_err()
         );
         // Neither URL form set.
-        assert!(super::JwksAuthorizer::from_configs(&[jwks_config(None, None, None)]).is_err());
+        assert!(
+            crate::authorizer::ProvisionerAuthorizer::from_configs(&[jwks_config(
+                None, None, None
+            )])
+            .is_err()
+        );
         // Non-https URL.
         assert!(
-            super::JwksAuthorizer::from_configs(&[jwks_config(
+            crate::authorizer::ProvisionerAuthorizer::from_configs(&[jwks_config(
                 Some("http://idp.example.com/keys"),
                 None,
                 Some("https://idp.example.com"),
@@ -491,7 +459,7 @@ mod tests {
             Some("https://idp.example.com"),
         );
         cfg.audiences.clear();
-        assert!(super::JwksAuthorizer::from_configs(&[cfg]).is_err());
+        assert!(crate::authorizer::ProvisionerAuthorizer::from_configs(&[cfg]).is_err());
     }
 
     #[test]
@@ -501,10 +469,13 @@ mod tests {
             Some("https://token.actions.githubusercontent.com/.well-known/openid-configuration"),
             None,
         );
-        let authorizer = super::JwksAuthorizer::from_configs(&[cfg]).unwrap();
+        let crate::config::ProvisionerKind::Jwks { jwks } = &cfg.kind else {
+            unreachable!()
+        };
+        let verifier = super::JwksVerifier::new(&cfg, jwks, super::http_client().unwrap()).unwrap();
         assert_eq!(
-            authorizer.issuers(),
-            vec!["https://token.actions.githubusercontent.com".to_string()]
+            verifier.issuer,
+            "https://token.actions.githubusercontent.com"
         );
     }
 }

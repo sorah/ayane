@@ -249,6 +249,15 @@ impl ProvisionerConfig {
         self.authorized
             .unwrap_or(matches!(self.kind, ProvisionerKind::Jwk { .. }))
     }
+
+    /// The token issuer this provisioner expects — its routing key. For `jwk`
+    /// the provisioner name; for `jwks` the resolved issuer.
+    pub fn expected_issuer(&self) -> String {
+        match &self.kind {
+            ProvisionerKind::Jwk { .. } => self.name.clone(),
+            ProvisionerKind::Jwks { jwks } => jwks.resolved_issuer(&self.name),
+        }
+    }
 }
 
 impl JwksConfig {
