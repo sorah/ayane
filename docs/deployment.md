@@ -9,7 +9,7 @@ This page covers both run modes, the AWS-native backends (KMS signing keys, Dyna
 The server resolves its configuration from, in order of precedence:
 
 1. A file path given as the first command-line argument.
-2. The `AYANE_BOOTSTRAP_STORAGE_CONFIG` environment variable (with `AYANE_CONFIG_SHA384`): load the document from a [storage backend](#configuration-in-storage). For configurations too large or too sensitive to carry inline.
+2. The `AYANE_BOOTSTRAP_STORAGE_CONFIG` environment variable (with `AYANE_CONFIG_SHA256`): load the document from a [storage backend](#configuration-in-storage). For configurations too large or too sensitive to carry inline.
 3. The `AYANE_CONFIG_BASE64URL` environment variable: the whole document as base64url (no padding) encoded JSON, carried inline. Useful where shipping a sidecar file is awkward, such as AWS Lambda.
 4. The `AYANE_CONFIG` environment variable: a file path.
 5. The default `ayane.json` in the working directory.
@@ -30,13 +30,13 @@ AYANE_CONFIG_BASE64URL=$(basenc --base64url -w0 ayane.json | tr -d '=') ayane-se
 For deployments where the configuration is too large for an environment variable, or carries secrets you would rather not expose in the function's environment, the server can read the document from a [storage backend](storage.md) instead. The environment carries only a small *bootstrap*:
 
 - `AYANE_BOOTSTRAP_STORAGE_CONFIG` — the storage backend that holds the configuration, as base64url (no padding) encoded JSON of a [`storage`](configuration.md#storage) object (for example `{"type":"dynamodb","table_name":"ayane"}`).
-- `AYANE_CONFIG_SHA384` — the base64url (no padding) SHA-384 digest of the configuration document. It both derives the cache key (`config:<digest>`) the document is stored under and authenticates the bytes read back: a digest mismatch fails startup.
+- `AYANE_CONFIG_SHA256` — the base64url (no padding) SHA-256 digest of the configuration document. It both derives the cache key (`config:<digest>`) the document is stored under and authenticates the bytes read back: a digest mismatch fails startup.
 
-The document itself is written to that backend's [cache](storage.md#cache-items) out of band — by your deployment tooling — under the `config:<digest>` key, with a far-future expiry so it is not reaped (cache entries expire on read, and DynamoDB reaps them via TTL). Because the key is the content digest, publishing a new configuration is a write under a new key followed by an update of `AYANE_CONFIG_SHA384`; the previous document stays addressable for rollback. ayane only reads; it never writes the configuration itself.
+The document itself is written to that backend's [cache](storage.md#cache-items) out of band — by your deployment tooling — under the `config:<digest>` key, with a far-future expiry so it is not reaped (cache entries expire on read, and DynamoDB reaps them via TTL). Because the key is the content digest, publishing a new configuration is a write under a new key followed by an update of `AYANE_CONFIG_SHA256`; the previous document stays addressable for rollback. ayane only reads; it never writes the configuration itself.
 
 ```bash
 # Compute the digest your tooling pins, and the bootstrap value
-AYANE_CONFIG_SHA384=$(openssl dgst -sha384 -binary ayane.json | basenc --base64url -w0 | tr -d '=')
+AYANE_CONFIG_SHA256=$(openssl dgst -sha256 -binary ayane.json | basenc --base64url -w0 | tr -d '=')
 AYANE_BOOTSTRAP_STORAGE_CONFIG=$(printf '%s' '{"type":"dynamodb","table_name":"ayane"}' | basenc --base64url -w0 | tr -d '=')
 ```
 
@@ -151,7 +151,7 @@ Set `server.external_url` to the Function URL's public base (for example `https:
 Packaging notes:
 
 - Build the binary for the Lambda runtime (a static or `provided.al2023`-compatible build) and deploy it as a custom-runtime function whose handler is `ayane-server`.
-- Pass the configuration inline via `AYANE_CONFIG_BASE64URL` (base64url, no padding, of the JSON document) so the function needs no sidecar file, bundle a config alongside the binary and point `AYANE_CONFIG` at its in-package path, or — for a large or secret-bearing config — keep it in DynamoDB and pass only the [storage bootstrap](#configuration-in-storage) (`AYANE_BOOTSTRAP_STORAGE_CONFIG` + `AYANE_CONFIG_SHA384`).
+- Pass the configuration inline via `AYANE_CONFIG_BASE64URL` (base64url, no padding, of the JSON document) so the function needs no sidecar file, bundle a config alongside the binary and point `AYANE_CONFIG` at its in-package path, or — for a large or secret-bearing config — keep it in DynamoDB and pass only the [storage bootstrap](#configuration-in-storage) (`AYANE_BOOTSTRAP_STORAGE_CONFIG` + `AYANE_CONFIG_SHA256`).
 - Lambda functions are stateless and may run many concurrent instances, so use a durable, shared backend (DynamoDB) for state. The default in-memory storage does not share revocations or one-time-token claims across instances and must not be used in Lambda. See [storage](storage.md).
 - The function's execution role supplies AWS credentials for KMS, DynamoDB, EventBridge, and Lambda webhook calls.
 

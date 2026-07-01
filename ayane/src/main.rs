@@ -42,10 +42,10 @@ async fn run() -> ayane::error::Result<()> {
 /// Resolve the configuration, in order of precedence:
 ///
 /// 1. A file path given as the first command-line argument.
-/// 2. `AYANE_BOOTSTRAP_STORAGE_CONFIG` (+ `AYANE_CONFIG_SHA384`): load the
+/// 2. `AYANE_BOOTSTRAP_STORAGE_CONFIG` (+ `AYANE_CONFIG_SHA256`): load the
 ///    document from a storage backend. The variable carries the bootstrap
 ///    [`ayane::config::StorageConfig`] as base64url (no padding) JSON, and the
-///    SHA-384 digest both locates and authenticates the stored document. For
+///    SHA-256 digest both locates and authenticates the stored document. For
 ///    deployments where the configuration is too large or sensitive to pass
 ///    inline. See [`ayane::bootstrap`].
 /// 3. `AYANE_CONFIG_BASE64URL`: the whole document as base64url (no padding)
@@ -58,10 +58,10 @@ async fn load_config() -> ayane::error::Result<ayane::config::Config> {
         return ayane::config::Config::from_path(std::path::Path::new(&arg));
     }
     if let Some(storage) = env_nonempty("AYANE_BOOTSTRAP_STORAGE_CONFIG") {
-        let digest = env_nonempty("AYANE_CONFIG_SHA384").ok_or_else(|| {
+        let digest = env_nonempty("AYANE_CONFIG_SHA256").ok_or_else(|| {
             ayane::error::Error::Config(
-                "AYANE_BOOTSTRAP_STORAGE_CONFIG is set but AYANE_CONFIG_SHA384 is not; the \
-                 SHA-384 digest is required to locate and verify the stored configuration"
+                "AYANE_BOOTSTRAP_STORAGE_CONFIG is set but AYANE_CONFIG_SHA256 is not; the \
+                 SHA-256 digest is required to locate and verify the stored configuration"
                     .into(),
             )
         })?;
