@@ -142,7 +142,7 @@ The webhook replies with a single JSON object. Every field is optional; an absen
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `allow` | bool | `false` denies the request; `true` or absent permits it |
+| `allow` | bool | `false` always denies. For an authorized provisioner, `true`/absent permits; for an unauthorized one, `true` is required to permit (see [Deny semantics](#deny-semantics)) |
 | `deny_reason` | string | Human-readable denial reason, surfaced when `allow` is `false` |
 | `subject_common_name` | string | Override the subject common name |
 | `sans` | array of string | Replace the SAN set entirely |
@@ -157,7 +157,12 @@ Each `additional_extensions` entry is `{ "oid": "1.2.3.4", "value": "<standard-b
 
 ### Deny semantics
 
-A request is denied only when `allow` is exactly `false`. A reply of `{"allow": true}`, `{}`, or any reply where `allow` is missing **permits** the request — note this is the opposite default of the old authorizing model. A denial returns `403 Forbidden`; the detail is `deny_reason` when provided, otherwise `issuance denied by webhook "<name>"`.
+The default direction depends on the provisioner's [`authorized`](provisioners.md#authorization-authorized) flag:
+
+- **Authorized provisioner (default-allow)** — the common case (`jwk`). A request is denied only when a webhook returns `allow` exactly `false`. A reply of `{"allow": true}`, `{}`, or one where `allow` is missing **permits** it. No webhook is required.
+- **Unauthorized provisioner (default-deny)** — a provisioner with `authorized: false` (the default for `jwks`). The token only authenticates; issuance is refused **unless** an applicable webhook returns `allow` exactly `true`. A silent reply (`{}` / `allow` absent) is *not* enough, and if no webhook applies at all the request is denied. This is where the webhook grants access and typically also sets the certificate's `subject_common_name`/`sans`.
+
+In both directions an explicit `allow: false` denies immediately and short-circuits the chain. A denial returns `403 Forbidden`; the detail is `deny_reason` when provided, otherwise `issuance denied by webhook "<name>"` (or `issuance was not authorized by any webhook` when an unauthorized request received no explicit grant).
 
 ### Validity semantics
 

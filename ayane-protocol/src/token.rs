@@ -25,8 +25,11 @@ pub struct OttClaims {
     pub nbf: i64,
     /// Expiry (epoch seconds).
     pub exp: i64,
-    /// Unique token id, used for one-time (anti-replay) enforcement.
-    pub jti: String,
+    /// Unique token id, used for one-time (anti-replay) enforcement. Optional:
+    /// ayane's own OTTs always set it, but public OIDC issuers may omit it (e.g.
+    /// Google), in which case the server derives a replay id from the token.
+    #[serde(default)]
+    pub jti: Option<String>,
     /// Optional confirmation binding the token to a specific CSR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cnf: Option<Confirmation>,

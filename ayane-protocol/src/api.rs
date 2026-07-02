@@ -119,10 +119,18 @@ pub struct ProvisionersResponse {
 pub struct ProvisionerInfo {
     /// Provisioner name; matches the `iss` claim of tokens it issues.
     pub name: String,
-    /// Provisioner kind, e.g. `"jwk"`.
+    /// Provisioner kind, e.g. `"jwk"` or `"jwks"`.
     #[serde(rename = "type")]
     pub kind: String,
     /// Accepted token audiences.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audiences: Vec<String>,
+    /// Whether a validated token alone authorizes issuance. When `false`, an
+    /// authorize webhook must explicitly grant each request.
+    #[serde(default = "default_true")]
+    pub authorized: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
