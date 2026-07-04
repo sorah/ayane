@@ -120,6 +120,7 @@ ayane POSTs the same JSON document to every hook (HTTP body or Lambda payload). 
 | `previous_certificate_der` | string | no | **Standard base64** of the previous certificate DER; present for `renew` and `rekey` |
 | `not_before` | string (RFC 3339) | yes | Baseline notBefore |
 | `not_after` | string (RFC 3339) | yes | Baseline notAfter |
+| `renew` | bool | yes | Baseline renewability: the token's `renew` claim on `sign`, or `true` on `renew`/`rekey`. A hook may only disable it (see [response `renew`](#non-renewable-certificates)) |
 
 `provisioner`, `csr_der`, and `previous_certificate_der` are omitted entirely when absent (they are not sent as `null`). Example body:
 
@@ -169,8 +170,15 @@ The hook replies with a single JSON object. Every field is optional; an absent f
 | `extended_key_usage` | array of [EKU name](configuration.md#extended-key-usage-names) | Override the `extendedKeyUsage` set |
 | `additional_extensions` | array of object | Inject arbitrary extensions (replacing any with the same OID) |
 | `once` | array of object | Anti-replay scopes to claim before issuance — issue at most once per each `scope` (see [Anti-replay scopes](#anti-replay-scopes-once)) |
+| `renew` | bool | `false` marks the issued certificate non-renewable (see [Non-renewable certificates](#non-renewable-certificates)). `true`/absent leaves renewability unchanged |
 
 Each `additional_extensions` entry is `{ "oid": "1.2.3.4", "value": "<standard-base64 of the DER extension value>", "critical": false }`. `value` is the inner extension value, not the surrounding OCTET STRING. The subject and authority key identifiers are always recomputed last, so they cannot be overridden by `additional_extensions`.
+
+### Non-renewable certificates
+
+A hook can mark the issued certificate **non-renewable** by returning `renew: false`. The CA stamps a [non-renewable marker extension](provisioners.md#non-renewable-certificates) onto the certificate, and later rejects any `POST /v1/renew` or `POST /v1/rekey` for it with `403 Forbidden` (`certificate is not renewable`). The CA re-derives that extension solely from the effective `renew` decision, so a hook must use this field — injecting the marker OID through `additional_extensions` has no effect (it is stripped and re-stamped).
+
+Renewability is a one-way switch. The baseline comes from the token's [`renew` claim](provisioners.md#non-renewable-certificates) (or `true` when the token omits it), and a hook may only turn it **off** — returning `renew: true` never re-enables a certificate the token (or an earlier hook) already made non-renewable. Because `renew`/`rekey` themselves carry no token, they seed the baseline as renewable; a hook may still mark a *reissued* certificate non-renewable, but note that a non-renewable certificate never reaches the hook on renewal because the gate rejects it first.
 
 ### Anti-replay scopes (`once`)
 

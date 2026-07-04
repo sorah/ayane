@@ -130,6 +130,7 @@ mod tests {
             previous_certificate_der: None,
             not_before: "2026-06-14T00:00:00Z".parse().unwrap(),
             not_after: "2026-09-14T00:00:00Z".parse().unwrap(),
+            renew: true,
         }
     }
 

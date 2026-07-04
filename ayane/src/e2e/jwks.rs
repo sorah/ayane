@@ -84,6 +84,7 @@ fn oidc_token(secret: &p256::SecretKey, issuer: &str, subject: &str) -> String {
         nbf: now - 5,
         exp: now + 300,
         jti: None,
+        renew: true,
         cnf: None,
         once: None,
     };

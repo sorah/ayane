@@ -4,14 +4,14 @@ use super::*;
 
 /// A hook that records the last request and replays a fixed sequence of
 /// responses (clamping to the last once exhausted).
-struct TestHook {
+pub(super) struct TestHook {
     responses: Vec<crate::hook::HookResponse>,
     calls: std::sync::atomic::AtomicUsize,
     last_request: std::sync::Mutex<Option<crate::hook::HookRequest>>,
 }
 
 impl TestHook {
-    fn new(responses: Vec<crate::hook::HookResponse>) -> std::sync::Arc<TestHook> {
+    pub(super) fn new(responses: Vec<crate::hook::HookResponse>) -> std::sync::Arc<TestHook> {
         std::sync::Arc::new(TestHook {
             responses,
             calls: std::sync::atomic::AtomicUsize::new(0),

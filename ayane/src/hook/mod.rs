@@ -72,6 +72,10 @@ pub struct HookRequest {
     pub not_before: chrono::DateTime<chrono::Utc>,
     /// Effective notAfter.
     pub not_after: chrono::DateTime<chrono::Utc>,
+    /// Whether the certificate is renewable so far (from the token, or the
+    /// pre-hook default). A hook may only turn this off via
+    /// [`HookResponse::renew`], never back on.
+    pub renew: bool,
 }
 
 /// An arbitrary X.509 extension supplied by a hook.
@@ -145,6 +149,10 @@ pub struct OnceClaim {
 pub struct HookResponse {
     /// `Some(false)` denies the request; `Some(true)`/`None` permit it.
     pub allow: Option<bool>,
+    /// `Some(false)` marks the issued certificate non-renewable (it can no
+    /// longer be renewed or rekeyed). `Some(true)`/`None` leave renewability at
+    /// its pre-hook value: a hook may disable renewal but not re-enable it.
+    pub renew: Option<bool>,
     /// Human-readable denial reason, surfaced when `allow` is `false`.
     pub deny_reason: Option<String>,
     /// Override the subject common name.
@@ -245,6 +253,9 @@ pub struct Context<'a> {
     pub csr_der: Option<&'a [u8]>,
     /// DER of the previous certificate, for `renew`/`rekey`.
     pub previous_certificate_der: Option<&'a [u8]>,
+    /// Baseline renewability: the token's `renew` claim on `sign`, or `true` on
+    /// reissue. A hook may only tighten it to non-renewable.
+    pub renewable: bool,
 }
 
 /// The effective certificate properties after applying hook responses,
@@ -267,6 +278,9 @@ pub struct Customization {
     /// Anti-replay scopes accumulated from every applicable hook, each already
     /// namespaced to its asserting hook.
     pub once_claims: Vec<OnceClaim>,
+    /// Effective renewability after applying hook responses. Starts at the
+    /// baseline and latches to `false` once any hook disables it.
+    pub renewable: bool,
 }
 
 /// Consult every applicable hook in order, layering their responses onto a
@@ -290,6 +304,7 @@ pub async fn run(
         extended_key_usage: None,
         additional_extensions: Vec::new(),
         once_claims: Vec::new(),
+        renewable: ctx.renewable,
     };
     if hooks.is_empty() {
         return unauthorized_guard(ctx.authorized, false).map(|()| customization);
@@ -305,6 +320,7 @@ pub async fn run(
         previous_certificate_der: ctx.previous_certificate_der.map(<[u8]>::to_vec),
         not_before: chrono::DateTime::<chrono::Utc>::from(ctx.not_before),
         not_after: chrono::DateTime::<chrono::Utc>::from(ctx.not_after),
+        renew: ctx.renewable,
     };
 
     let mut explicitly_allowed = false;
@@ -351,6 +367,11 @@ fn apply_response(
     customization: &mut Customization,
     response: &HookResponse,
 ) -> crate::error::Result<()> {
+    // Renewability is a one-way switch: a hook may disable it but never
+    // re-enable one the token (or an earlier hook) already turned off.
+    if response.renew == Some(false) {
+        customization.renewable = false;
+    }
     if let Some(cn) = &response.subject_common_name {
         customization.subject_common_name = Some(cn.clone());
     }
@@ -398,6 +419,7 @@ mod tests {
             extended_key_usage: None,
             additional_extensions: Vec::new(),
             once_claims: Vec::new(),
+            renewable: true,
         }
     }
 
@@ -471,6 +493,7 @@ mod tests {
             previous_certificate_der: None,
             not_before: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH),
             not_after: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH),
+            renew: true,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["operation"], "sign");
@@ -539,6 +562,7 @@ mod tests {
             not_after: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(3600),
             csr_der: None,
             previous_certificate_der: None,
+            renewable: true,
         }
     }
 

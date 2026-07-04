@@ -14,28 +14,39 @@ fn random_id() -> String {
     hex::encode(bytes)
 }
 
+/// Inputs for [`make_ott`].
+pub struct OttParams<'a> {
+    /// Token issuer (provisioner name).
+    pub issuer: &'a str,
+    /// Token audience (CA endpoint URL).
+    pub audience: &'a str,
+    /// Certificate subject / common name (or serial number, for `revoke`).
+    pub subject: &'a str,
+    /// Permitted SANs.
+    pub sans: &'a [String],
+    /// Token lifetime in seconds.
+    pub validity_secs: i64,
+    /// Whether the issued certificate may later be renewed or rekeyed.
+    pub renew: bool,
+    /// Optional once-per-scope anti-replay constraint.
+    pub once: Option<ayane_protocol::OnceScope>,
+}
+
 /// Build a signed one-time issuance token.
-pub fn make_ott(
-    key: &crate::keypair::KeyPair,
-    issuer: &str,
-    audience: &str,
-    subject: &str,
-    sans: &[String],
-    validity_secs: i64,
-    once: Option<ayane_protocol::OnceScope>,
-) -> anyhow::Result<String> {
+pub fn make_ott(key: &crate::keypair::KeyPair, params: OttParams<'_>) -> anyhow::Result<String> {
     let now = unix_now();
     let claims = ayane_protocol::OttClaims {
-        iss: issuer.to_string(),
-        aud: audience.to_string(),
-        sub: subject.to_string(),
-        sans: sans.to_vec(),
+        iss: params.issuer.to_string(),
+        aud: params.audience.to_string(),
+        sub: params.subject.to_string(),
+        sans: params.sans.to_vec(),
         iat: now,
         nbf: now - 5,
-        exp: now + validity_secs,
+        exp: now + params.validity_secs,
         jti: Some(random_id()),
+        renew: params.renew,
         cnf: None,
-        once,
+        once: params.once,
     };
     let header = jsonwebtoken::Header::new(key.jwt_algorithm());
     Ok(jsonwebtoken::encode(

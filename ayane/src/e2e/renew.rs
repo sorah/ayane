@@ -98,6 +98,10 @@ async fn renewal_preserves_original_eku() {
         .await
         .unwrap();
 
+    // A default issuance is renewable, so it carries no non-renewable marker.
+    let issued_cert = crate::x509::certificate_from_pem(&issued.certificate).unwrap();
+    assert!(!crate::x509::is_marked_non_renewable(&issued_cert));
+
     // The renewed certificate must carry clientAuth (preserved), not the
     // default template's serverAuth.
     let cert = crate::x509::certificate_from_pem(&renewed.certificate).unwrap();
@@ -111,4 +115,127 @@ async fn renewal_preserves_original_eku() {
     }
     assert!(ekus.contains(&const_oid::db::rfc5280::ID_KP_CLIENT_AUTH));
     assert!(!ekus.contains(&const_oid::db::rfc5280::ID_KP_SERVER_AUTH));
+}
+
+#[tokio::test]
+async fn non_renewable_token_blocks_renew_and_rekey() {
+    let h = setup().await;
+    let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let issued = h
+        .service
+        .sign(
+            ayane_protocol::SignRequest {
+                csr: make_csr(&leaf, "host.example", &["host.example"]),
+                token: make_token_non_renewable(
+                    &h.provisioner_pem,
+                    SIGN_URL,
+                    "host.example",
+                    &["host.example"],
+                ),
+                not_before: None,
+                not_after: None,
+            },
+            SIGN_URL,
+            None,
+        )
+        .await
+        .expect("issue succeeds");
+
+    // The certificate self-describes as non-renewable: the marker extension is
+    // present and non-critical.
+    let cert = crate::x509::certificate_from_pem(&issued.certificate).unwrap();
+    assert!(crate::x509::is_marked_non_renewable(&cert));
+    let marker = cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|e| e.extn_id == crate::x509::NON_RENEWABLE_OID)
+        .expect("non-renewable marker present");
+    assert!(!marker.critical, "marker must be non-critical");
+
+    // Renewal of a non-renewable certificate is rejected.
+    let renew = h
+        .service
+        .renew(
+            ayane_protocol::RenewRequest {
+                certificate: issued.certificate.clone(),
+            },
+            Some(&make_dpop(&leaf, RENEW_URL)),
+            RENEW_URL,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(renew, Err(crate::error::Error::Forbidden(_))),
+        "non-renewable certificate must not renew"
+    );
+
+    // Rekey (also a reissue) is rejected on the same grounds.
+    let new_leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let rekey = h
+        .service
+        .rekey(
+            ayane_protocol::RekeyRequest {
+                certificate: issued.certificate.clone(),
+                csr: make_csr(&new_leaf, "host.example", &["host.example"]),
+            },
+            Some(&make_dpop(&leaf, "https://ca.test/v1/rekey")),
+            "https://ca.test/v1/rekey",
+            None,
+        )
+        .await;
+    assert!(
+        matches!(rekey, Err(crate::error::Error::Forbidden(_))),
+        "non-renewable certificate must not rekey"
+    );
+}
+
+#[tokio::test]
+async fn hook_marks_certificate_non_renewable() {
+    // A hook that returns `renew: false` makes the issued certificate
+    // non-renewable even though the token permitted renewal.
+    let hook = super::hooks::TestHook::new(vec![crate::hook::HookResponse {
+        renew: Some(false),
+        ..Default::default()
+    }]);
+    let hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>> = vec![hook.clone()];
+    let h = setup_with_hooks(hooks).await;
+    let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let issued = h
+        .service
+        .sign(
+            ayane_protocol::SignRequest {
+                csr: make_csr(&leaf, "host.example", &["host.example"]),
+                token: make_token(
+                    &h.provisioner_pem,
+                    SIGN_URL,
+                    "host.example",
+                    &["host.example"],
+                ),
+                not_before: None,
+                not_after: None,
+            },
+            SIGN_URL,
+            None,
+        )
+        .await
+        .expect("issue succeeds");
+
+    let renew = h
+        .service
+        .renew(
+            ayane_protocol::RenewRequest {
+                certificate: issued.certificate.clone(),
+            },
+            Some(&make_dpop(&leaf, RENEW_URL)),
+            RENEW_URL,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(renew, Err(crate::error::Error::Forbidden(_))),
+        "hook-disabled renewal must be rejected"
+    );
 }

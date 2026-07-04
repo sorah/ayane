@@ -27,6 +27,9 @@ pub struct IssueParams<'a> {
     pub extended_key_usage_override: Option<Vec<crate::template::ExtKeyUsageName>>,
     /// Extra extensions (e.g. from a hook), layered on top by OID.
     pub additional_extensions: Vec<x509_cert::ext::Extension>,
+    /// Whether the issued certificate may later be renewed or rekeyed. When
+    /// `false`, the CA stamps the [non-renewable marker](crate::x509::NON_RENEWABLE_OID).
+    pub renewable: bool,
 }
 
 /// Inputs for one reissuance (renew or rekey).
@@ -55,6 +58,9 @@ pub struct ReissueParams<'a> {
     pub extended_key_usage_override: Option<Vec<crate::template::ExtKeyUsageName>>,
     /// Extra extensions (e.g. from a hook), layered on top by OID.
     pub additional_extensions: Vec<x509_cert::ext::Extension>,
+    /// Whether the reissued certificate may be renewed or rekeyed again. When
+    /// `false`, the CA stamps the [non-renewable marker](crate::x509::NON_RENEWABLE_OID).
+    pub renewable: bool,
 }
 
 /// A freshly issued certificate plus convenient derived fields.
@@ -174,7 +180,7 @@ impl CertificateAuthority {
         };
         let subject = crate::x509::name_with_common_name(common_name)?;
 
-        let extensions = params.template.build_extensions(
+        let mut extensions = params.template.build_extensions(
             &params.public_key,
             &params.sans,
             &self.ca_key_id,
@@ -185,6 +191,7 @@ impl CertificateAuthority {
                 additional_extensions: &params.additional_extensions,
             },
         )?;
+        set_non_renewable_marker(&mut extensions, params.renewable)?;
 
         let serial_number = crate::x509::random_serial_number()?;
         let serial_decimal = serial_to_decimal(serial_number.as_bytes());
@@ -274,6 +281,7 @@ impl CertificateAuthority {
         for ext in &params.additional_extensions {
             crate::template::upsert_extension(&mut extensions, ext.clone());
         }
+        set_non_renewable_marker(&mut extensions, params.renewable)?;
         crate::template::finalize_key_identifiers(
             &mut extensions,
             &params.public_key,
@@ -314,6 +322,22 @@ impl CertificateAuthority {
                 crate::error::Error::Forbidden("certificate was not issued by this CA".into())
             })
     }
+}
+
+/// Force the [non-renewable marker](crate::x509::NON_RENEWABLE_OID) to match
+/// `renewable`, making the CA the sole authority on it: any pre-existing copy
+/// (a hook-injected extension, or one copied from the previous certificate on
+/// reissue) is dropped first, then the marker is re-stamped only when the
+/// certificate is non-renewable.
+fn set_non_renewable_marker(
+    extensions: &mut Vec<x509_cert::ext::Extension>,
+    renewable: bool,
+) -> crate::error::Result<()> {
+    extensions.retain(|e| e.extn_id != crate::x509::NON_RENEWABLE_OID);
+    if !renewable {
+        extensions.push(crate::x509::non_renewable_extension()?);
+    }
+    Ok(())
 }
 
 /// Convert a big-endian unsigned serial-number magnitude into a decimal string.
@@ -379,6 +403,7 @@ mod tests {
                 key_usage_override: None,
                 extended_key_usage_override: None,
                 additional_extensions: Vec::new(),
+                renewable: true,
             })
             .await
             .unwrap();

@@ -55,6 +55,7 @@ Every certificate the CA issues — whether through `sign`, `renew`, or `rekey` 
 | `issued_at` | RFC 3339 issuance timestamp |
 | `provisioner` | Provisioner that authorized the issuance, if any (absent for renew/rekey, which authenticate via DPoP) |
 | `operation` | `sign`, `renew`, or `rekey` |
+| `renewable` | Whether the certificate may be renewed or rekeyed. Mirrors the [non-renewable marker](provisioners.md#non-renewable-certificates) carried in the certificate itself — recorded here for audit only; the renewal gate reads the certificate, not this field. Defaults to `true` for records written before this field existed |
 | `pem` | Full PEM of the issued leaf certificate |
 
 Recording is **fail-closed**: the inventory entry is committed before the certificate is returned to the client, so the registry never misses an issuance. If the write fails, the request fails (the serial is consumed but the certificate is not handed out). Serial numbers are random 128-bit values, so each issuance is a fresh row; a reused serial signals a collision and is rejected rather than overwriting the existing record.
@@ -130,6 +131,7 @@ not_after     = <rfc3339>               (String)
 issued_at     = <rfc3339>               (String)
 provisioner   = <name>                  (String, if provided)
 operation     = "sign" | "renew" | "rekey"   (String)
+renewable     = true | false            (Bool)
 pem           = <leaf certificate PEM>  (String)
 ```
 

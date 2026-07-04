@@ -27,6 +27,10 @@ pub struct TokenArgs {
     /// Token lifetime, e.g. `5m`.
     #[arg(long, default_value = "5m")]
     validity: String,
+    /// Mint a non-renewable certificate: it cannot later be renewed or rekeyed,
+    /// and a fresh token is required for any subsequent certificate.
+    #[arg(long)]
+    no_renew: bool,
     /// Once-per-scope anti-replay value: issue at most once per this value
     /// (e.g. a backing instance id) until `--once-expires-in` elapses.
     #[arg(long)]
@@ -60,12 +64,15 @@ pub fn run(args: TokenArgs) -> anyhow::Result<()> {
     };
     let token = crate::proof::make_ott(
         &key,
-        &args.issuer,
-        &audience,
-        &args.subject,
-        &args.sans,
-        validity,
-        once,
+        crate::proof::OttParams {
+            issuer: &args.issuer,
+            audience: &audience,
+            subject: &args.subject,
+            sans: &args.sans,
+            validity_secs: validity,
+            renew: !args.no_renew,
+            once,
+        },
     )?;
     println!("{token}");
     Ok(())

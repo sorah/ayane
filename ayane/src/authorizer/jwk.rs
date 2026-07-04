@@ -128,6 +128,7 @@ mod tests {
             nbf: t - 10,
             exp: t + 300,
             jti: Some("jti-1".into()),
+            renew: true,
             cnf: None,
             once: None,
         }

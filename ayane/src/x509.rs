@@ -9,6 +9,46 @@
 
 use der::{Decode, Encode};
 
+/// ayane's private OID root (`1.3.6.1.4.1.47517.9.1`).
+pub const OID_ROOT: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.3.6.1.4.1.47517.9.1");
+
+/// Arc under [`OID_ROOT`] for ayane-specific X.509 certificate extensions
+/// (`…9.1.509`, the label chosen to echo "X.509").
+pub const OID_X509_EXTENSIONS: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.3.6.1.4.1.47517.9.1.509");
+
+/// Non-renewable marker extension (`…9.1.509.1`). A certificate that must not be
+/// renewed or rekeyed carries this extension with an ASN.1 `BOOLEAN` value of
+/// `FALSE` (the `renewable` flag); a renewable certificate — the default — omits
+/// it entirely. Non-critical, so relying parties ignore it.
+pub const NON_RENEWABLE_OID: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.3.6.1.4.1.47517.9.1.509.1");
+
+/// Build the non-renewable marker extension: OID [`NON_RENEWABLE_OID`],
+/// non-critical, value `BOOLEAN FALSE` (`renewable = false`).
+pub fn non_renewable_extension() -> crate::error::Result<x509_cert::ext::Extension> {
+    Ok(x509_cert::ext::Extension {
+        extn_id: NON_RENEWABLE_OID,
+        critical: false,
+        extn_value: der::asn1::OctetString::new(false.to_der()?)?,
+    })
+}
+
+/// Whether `cert` is marked non-renewable: the [`NON_RENEWABLE_OID`] extension is
+/// present and its `renewable` BOOLEAN is `FALSE`. A present-but-undecodable
+/// value is treated as non-renewable (fail-closed); an absent extension means
+/// renewable.
+pub fn is_marked_non_renewable(cert: &x509_cert::Certificate) -> bool {
+    let Some(extensions) = &cert.tbs_certificate.extensions else {
+        return false;
+    };
+    match extensions.iter().find(|e| e.extn_id == NON_RENEWABLE_OID) {
+        Some(ext) => !bool::from_der(ext.extn_value.as_bytes()).unwrap_or(false),
+        None => false,
+    }
+}
+
 /// Wrap a typed, DER-encodable extension value into an X.509 `Extension`.
 pub fn extension<T>(value: &T, critical: bool) -> crate::error::Result<x509_cert::ext::Extension>
 where
@@ -155,4 +195,29 @@ pub fn certificate_from_pem(pem: &str) -> crate::error::Result<x509_cert::Certif
         })?;
     x509_cert::Certificate::from_der(leaf.contents())
         .map_err(|e| crate::error::Error::BadRequest(format!("invalid certificate: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn non_renewable_extension_is_non_critical_boolean_false() {
+        let ext = super::non_renewable_extension().unwrap();
+        assert_eq!(ext.extn_id, super::NON_RENEWABLE_OID);
+        assert!(!ext.critical);
+        // Value is a DER ASN.1 BOOLEAN FALSE: tag 0x01, length 0x01, value 0x00.
+        assert_eq!(ext.extn_value.as_bytes(), &[0x01, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn oid_arc_layout() {
+        assert_eq!(super::OID_ROOT.to_string(), "1.3.6.1.4.1.47517.9.1");
+        assert_eq!(
+            super::OID_X509_EXTENSIONS.to_string(),
+            "1.3.6.1.4.1.47517.9.1.509"
+        );
+        assert_eq!(
+            super::NON_RENEWABLE_OID.to_string(),
+            "1.3.6.1.4.1.47517.9.1.509.1"
+        );
+    }
 }

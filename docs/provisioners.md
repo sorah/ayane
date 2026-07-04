@@ -140,6 +140,7 @@ The OTT is a JWT signed by the provisioner key. It carries the standard register
 | `nbf` | number | Not-before (epoch seconds). Validated when present. |
 | `exp` | number | Expiry (epoch seconds). Validated. |
 | `jti` | string | Unique token id, used for one-time (anti-replay) enforcement. Optional: when absent the server derives the replay id from the token. See [One-time enforcement](#one-time-replay-protection). |
+| `renew` | boolean | Whether the issued certificate may later be renewed or rekeyed. Optional, defaults to `true`. Set `false` to mint a non-renewable certificate. See [Non-renewable certificates](#non-renewable-certificates). |
 | `cnf` | object | Optional confirmation binding the token to a specific CSR. See [CSR binding](#optional-csr-binding-cnf). |
 | `once` | object | Optional once-per-scope anti-replay constraint: issue at most once per an external value (e.g. a backing instance id). See [Anti-replay scopes](#anti-replay-scopes-once). |
 
@@ -217,6 +218,23 @@ The claim is an object:
 
 The scope is namespaced to the provisioner (`prov:<name>`), so it never collides with another provisioner's scope, with a hook-asserted scope (`hook:<name>`), or with the credential `jti` space. Like the `jti`, the scope is claimed only after every check passes and just before issuance commits (so a hook or template failure never burns it); a conflict is surfaced as `401 Unauthorized` (`an issuance has already been performed for this scope`). The same constraint can be asserted by a [hook](hooks.md#anti-replay-scopes-once) instead — useful when the trustworthy value (e.g. a verified instance identity) is only known to the hook, not the token minter.
 
+### Non-renewable certificates
+
+By default a certificate may be renewed or rekeyed by whoever holds its private key, without a fresh issuance token (see [renewal](renewal-revocation.md)). Setting `renew: false` on the OTT mints a **non-renewable** certificate and the holder must obtain a new token to get another certificate. This suits short-lived credentials whose lifecycle you want to gate entirely at the token minter — e.g. a CI job that should get exactly one certificate and never extend it.
+
+The state is recorded **in the certificate itself**, so renewal enforcement needs no inventory lookup and survives even if the CA's records are gone. A non-renewable certificate carries a marker extension; a renewable one (the default) omits it:
+
+| | |
+| --- | --- |
+| OID | `1.3.6.1.4.1.47517.9.1.509.1` (under ayane's X.509-extension arc `…9.1.509`) |
+| Critical | no — relying parties ignore it |
+| Value | ASN.1 `BOOLEAN` `FALSE` (the `renewable` flag) |
+| Presence | stamped only on non-renewable certificates; absent means renewable |
+
+At `POST /v1/renew` or `POST /v1/rekey`, the CA reads the marker straight from the presented certificate and rejects the request with `403 Forbidden` (`certificate is not renewable`). The CA is the sole authority on the marker: it strips any copy a hook or template tried to inject and re-stamps it solely from the effective `renew` decision, so the extension cannot be forged through `additional_extensions`. The flag defaults to `true` (renewable) and is also mirrored onto the [inventory record](storage.md) for audit.
+
+A [hook](hooks.md#non-renewable-certificates) can also mark a certificate non-renewable independently of the token; a hook may only disable renewal, never re-enable one the token already turned off.
+
 ## Minting a token
 
 Use `ayane token` to sign an OTT with a provisioner's private key. The token is printed to stdout.
@@ -231,6 +249,7 @@ Use `ayane token` to sign an OTT with a provisioner's private key. The token is 
 | `--subject <s>` | yes | — | Certificate subject / common name (or, for `revoke`, the serial number). |
 | `--san <s>` | no (repeatable) | — | Permitted SANs. |
 | `--validity <dur>` | no | `5m` | Token lifetime, e.g. `5m`, `1h`. Units: `s`, `m`, `h`, `d`. |
+| `--no-renew` | no | renewable | Mint a non-renewable certificate (sets `renew: false`): it cannot later be renewed or rekeyed. See [Non-renewable certificates](#non-renewable-certificates). |
 | `--once <value>` | no | — | Once-per-scope anti-replay value; issue at most once per this value. See [Anti-replay scopes](#anti-replay-scopes-once). |
 | `--once-expires-in <dur>` | no (requires `--once`) | cert notAfter | Lifetime of the `--once` scope claim, e.g. `24h`. |
 

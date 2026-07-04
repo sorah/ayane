@@ -43,6 +43,7 @@ impl SqliteStorage {
                  issued_at     TEXT NOT NULL,
                  provisioner   TEXT,
                  operation     TEXT NOT NULL,
+                 renewable     INTEGER NOT NULL DEFAULT 1,
                  pem           TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS revocations (
@@ -67,6 +68,22 @@ impl SqliteStorage {
              CREATE INDEX IF NOT EXISTS ix_cache_expires_at ON cache (expires_at);",
         )
         .map_err(|e| crate::error::Error::Config(format!("init sqlite schema: {e}")))?;
+        // Migrate databases created before `renewable` existed. A fresh database
+        // already has the column from the CREATE above, so tolerate the
+        // duplicate-column error rather than probing the schema first.
+        match conn.execute(
+            "ALTER TABLE certificates ADD COLUMN renewable INTEGER NOT NULL DEFAULT 1",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => {
+                return Err(crate::error::Error::Config(format!(
+                    "migrate sqlite certificates.renewable: {e}"
+                )));
+            }
+        }
         Ok(SqliteStorage {
             conn: std::sync::Arc::new(std::sync::Mutex::new(conn)),
         })
@@ -116,7 +133,8 @@ fn row_to_certificate(
         issued_at: row.get(5)?,
         provisioner: row.get(6)?,
         operation: row.get(7)?,
-        pem: row.get(8)?,
+        renewable: row.get(8)?,
+        pem: row.get(9)?,
     })
 }
 
@@ -130,7 +148,7 @@ const SELECT_REVOCATION: &str =
     "SELECT serial_number, reason_code, reason, revoked_at, provisioner FROM revocations";
 
 const SELECT_CERTIFICATE: &str = "SELECT serial_number, subject, sans, not_before, not_after, \
-     issued_at, provisioner, operation, pem FROM certificates";
+     issued_at, provisioner, operation, renewable, pem FROM certificates";
 
 #[async_trait::async_trait]
 impl crate::storage::Storage for SqliteStorage {
@@ -144,8 +162,8 @@ impl crate::storage::Storage for SqliteStorage {
             conn.execute(
                 "INSERT INTO certificates
                      (serial_number, subject, sans, not_before, not_after,
-                      issued_at, provisioner, operation, pem)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      issued_at, provisioner, operation, renewable, pem)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     record.serial_number,
                     record.subject,
@@ -155,6 +173,7 @@ impl crate::storage::Storage for SqliteStorage {
                     record.issued_at,
                     record.provisioner,
                     record.operation,
+                    record.renewable,
                     record.pem,
                 ],
             )
@@ -381,6 +400,7 @@ mod tests {
             issued_at: "2026-06-15T00:00:00Z".to_string(),
             provisioner: Some("prov1".to_string()),
             operation: "sign".to_string(),
+            renewable: true,
             pem: "-----BEGIN CERTIFICATE-----\nMII...\n-----END CERTIFICATE-----\n".to_string(),
         }
     }

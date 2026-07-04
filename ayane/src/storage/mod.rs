@@ -57,8 +57,17 @@ pub struct CertificateRecord {
     pub provisioner: Option<String>,
     /// The issuing operation: `"sign"`, `"renew"` or `"rekey"`.
     pub operation: String,
+    /// Whether this certificate may be renewed or rekeyed. `false` marks it
+    /// non-renewable; renew/rekey of such a certificate is rejected. Defaults to
+    /// `true` for records written before this field existed.
+    #[serde(default = "default_true")]
+    pub renewable: bool,
     /// Full PEM of the issued leaf certificate.
     pub pem: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A recorded revocation.

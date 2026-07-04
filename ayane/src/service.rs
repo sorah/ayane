@@ -351,6 +351,7 @@ impl Service {
             not_after,
             csr_der: Some(&csr.der),
             previous_certificate_der: None,
+            renewable: claims.renew,
         };
         let mut custom = crate::hook::run(&self.hooks, &context).await?;
         // A hook may adjust the validity window, but must not extend issuance
@@ -408,6 +409,7 @@ impl Service {
                 key_usage_override: custom.key_usage,
                 extended_key_usage_override: custom.extended_key_usage,
                 additional_extensions: custom.additional_extensions,
+                renewable: custom.renewable,
             })
             .await?;
 
@@ -423,6 +425,7 @@ impl Service {
                 issued_at: rfc3339(now),
                 provisioner: Some(validated.provisioner.clone()),
                 operation: "sign".to_string(),
+                renewable: custom.renewable,
                 pem: issued.pem.clone(),
             })
             .await?;
@@ -526,6 +529,15 @@ impl Service {
                 "certificate is revoked".into(),
             ));
         }
+        // A certificate marked non-renewable at issuance (the non-renewable
+        // marker extension) cannot be renewed or rekeyed. The state is read
+        // straight from the presented certificate, so it needs no inventory
+        // lookup and survives even if the record is gone.
+        if crate::x509::is_marked_non_renewable(&cert) {
+            return Err(crate::error::Error::Forbidden(
+                "certificate is not renewable".into(),
+            ));
+        }
 
         let now = std::time::SystemTime::now();
         let (cert_nb, cert_na) = cert_validity_window(&cert)?;
@@ -582,6 +594,10 @@ impl Service {
             not_after,
             csr_der: new_csr_der.as_deref(),
             previous_certificate_der: Some(&previous_certificate_der),
+            // The presented certificate passed the non-renewable gate above, so
+            // the reissued certificate is renewable by default; a hook may still
+            // mark this reissue non-renewable.
+            renewable: true,
         };
         let mut custom = crate::hook::run(&self.hooks, &context).await?;
         // A reissue preserves the previous certificate's lifetime: a hook may
@@ -622,6 +638,7 @@ impl Service {
                 key_usage_override: custom.key_usage,
                 extended_key_usage_override: custom.extended_key_usage,
                 additional_extensions: custom.additional_extensions,
+                renewable: custom.renewable,
             })
             .await?;
 
@@ -638,6 +655,7 @@ impl Service {
                 issued_at: rfc3339(now),
                 provisioner: None,
                 operation: if is_rekey { "rekey" } else { "renew" }.to_string(),
+                renewable: custom.renewable,
                 pem: issued.pem.clone(),
             })
             .await?;

@@ -154,6 +154,7 @@ impl SelfIssuer {
                 key_usage_override: None,
                 extended_key_usage_override: None,
                 additional_extensions: Vec::new(),
+                renewable: true,
             })
             .await?;
 

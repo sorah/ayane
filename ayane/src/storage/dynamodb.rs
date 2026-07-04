@@ -538,6 +538,10 @@ mod tests {
             aws_sdk_dynamodb::types::AttributeValue::S("sign".to_string()),
         );
         item.insert(
+            "renewable".to_string(),
+            aws_sdk_dynamodb::types::AttributeValue::Bool(true),
+        );
+        item.insert(
             "pem".to_string(),
             aws_sdk_dynamodb::types::AttributeValue::S("-----BEGIN CERTIFICATE-----".to_string()),
         );
@@ -561,6 +565,7 @@ mod tests {
                 issued_at: "2026-06-15T00:00:00Z".to_string(),
                 provisioner: Some("prov1".to_string()),
                 operation: "sign".to_string(),
+                renewable: true,
                 pem: "-----BEGIN CERTIFICATE-----".to_string(),
             })
             .await

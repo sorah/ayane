@@ -30,6 +30,13 @@ pub struct OttClaims {
     /// Google), in which case the server derives a replay id from the token.
     #[serde(default)]
     pub jti: Option<String>,
+    /// Whether the issued certificate may later be renewed or rekeyed. Defaults
+    /// to `true`; set `false` to mint a non-renewable certificate whose holder
+    /// must obtain a fresh issuance token for any subsequent certificate. The
+    /// CA records this on the certificate and rejects renew/rekey of one marked
+    /// non-renewable.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub renew: bool,
     /// Optional confirmation binding the token to a specific CSR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cnf: Option<Confirmation>,
@@ -58,6 +65,14 @@ pub struct OnceScope {
     /// per scope).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exp: Option<i64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// RFC 7800-style confirmation claim.

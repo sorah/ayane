@@ -160,6 +160,37 @@ fn make_token(provisioner_pem: &str, audience: &str, subject: &str, sans: &[&str
         nbf: now - 5,
         exp: now + 300,
         jti: Some(rand_jti()),
+        renew: true,
+        cnf: None,
+        once: None,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),
+        &claims,
+        &encoding_key,
+    )
+    .unwrap()
+}
+
+/// Mint a token that marks the issued certificate non-renewable (`renew: false`).
+fn make_token_non_renewable(
+    provisioner_pem: &str,
+    audience: &str,
+    subject: &str,
+    sans: &[&str],
+) -> String {
+    let encoding_key = jsonwebtoken::EncodingKey::from_ec_pem(provisioner_pem.as_bytes()).unwrap();
+    let now = unix_now();
+    let claims = ayane_protocol::OttClaims {
+        iss: "prov1".to_string(),
+        aud: audience.to_string(),
+        sub: subject.to_string(),
+        sans: sans.iter().map(|s| s.to_string()).collect(),
+        iat: now,
+        nbf: now - 5,
+        exp: now + 300,
+        jti: Some(rand_jti()),
+        renew: false,
         cnf: None,
         once: None,
     };
@@ -189,6 +220,7 @@ fn make_token_with_once(
         nbf: now - 5,
         exp: now + 300,
         jti: Some(rand_jti()),
+        renew: true,
         cnf: None,
         once: Some(once),
     };

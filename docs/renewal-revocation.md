@@ -46,6 +46,7 @@ Before a proof is even evaluated, `try_renew_or_rekey` and the DPoP branch of `t
 | --- | --- | --- |
 | Issued by this CA — the certificate's signature must validate under the CA's public key (`ca.verify_issued`). | `certificate was not issued by this CA` | 403 |
 | Not revoked — the certificate's serial must not already be on the revocation store (renew/rekey only). | `certificate is revoked` | 403 |
+| Renewable — the presented certificate must not carry the non-renewable marker extension (renew/rekey only). Read directly from the certificate, so it needs no inventory lookup. See [non-renewable certificates](provisioners.md#non-renewable-certificates). | `certificate is not renewable` | 403 |
 | Not expired — `now` must be before the certificate's `notAfter` (renew/rekey only). | `certificate has expired and cannot be renewed` | 403 |
 
 Only after these gates and the DPoP signature/binding/freshness checks all pass does the service claim the proof's `jti` and commit the operation. See [security model](security.md) for the rationale behind verifying against the certificate key.
