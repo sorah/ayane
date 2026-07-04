@@ -32,9 +32,7 @@ pub async fn from_config(
             Ok(
                 std::sync::Arc::new(crate::event_sink::eventbridge::EventBridgeSink::new(
                     client,
-                    event_bus_name
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string()),
+                    event_bus_name.clone(),
                     source.clone().unwrap_or_else(|| "ayane".to_string()),
                 )) as std::sync::Arc<dyn EventSink>,
             )
