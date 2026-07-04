@@ -51,6 +51,8 @@ Mints a one-time issuance token (OTT) — a JWT signed by a provisioner's privat
 | `--subject <CN>` | required | Certificate subject / common name. For `revoke`, the serial number. |
 | `--san <SAN>` | optional, repeatable | Permitted SAN. Repeat for multiple values; empty means only `--subject` is permitted. |
 | `--validity <DUR>` | default `5m` | Token lifetime. |
+| `--once <VALUE>` | optional | Once-per-scope anti-replay value: issue at most once per this value (e.g. a backing instance id). Sets the token `once` claim — see [provisioners](provisioners.md#anti-replay-scopes-once). |
+| `--once-expires-in <DUR>` | optional, requires `--once` | Lifetime of the `--once` scope claim. Defaults to the issued certificate's notAfter. |
 
 The audience is resolved as follows: if `--audience` is given it is used verbatim; otherwise if `--url` is given the audience becomes `<url>/v1/<operation>` (so `sign` → `<url>/v1/sign`, `revoke` → `<url>/v1/revoke`); if neither is given the command errors. The token `nbf` is backdated 5 seconds and `exp` is `iat + validity`.
 

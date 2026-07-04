@@ -152,12 +152,12 @@ Revocations are written with an `attribute_not_exists(pk)` condition so that re-
 ### Token denylist items
 
 ```
-pk  = "token:<jti>"
+pk  = "token:<claim-key>"
 sk  = "token"
 ttl = <expiry epoch seconds>            (Number)
 ```
 
-`claim_token` writes with an `attribute_not_exists(pk)` condition; a conditional-check failure means the id was already claimed and is reported as a replay.
+`<claim-key>` is the namespaced anti-replay key: `ott#<jti>` / `dpop#<jti>` for one-time credentials, or `scope#<namespace>#<value>` for a [once-per-scope constraint](provisioners.md#anti-replay-scopes-once). `claim_token` writes with an `attribute_not_exists(pk) OR ttl <= :now` condition — a fresh key, or one whose claim has already expired, is claimed; otherwise the conditional-check failure means the key is still held and the request is reported as a replay. The `ttl <= :now` arm matters for long-lived scopes: DynamoDB's TTL sweep is lazy (it may lag hours), so without it an expired scope would keep rejecting legitimate re-issuance until the sweep runs (the SQLite backend reclaims the same way, deleting the expired row before inserting).
 
 ### Cache items
 

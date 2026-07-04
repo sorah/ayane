@@ -141,6 +141,7 @@ The OTT is a JWT signed by the provisioner key. It carries the standard register
 | `exp` | number | Expiry (epoch seconds). Validated. |
 | `jti` | string | Unique token id, used for one-time (anti-replay) enforcement. Optional: when absent the server derives the replay id from the token. See [One-time enforcement](#one-time-replay-protection). |
 | `cnf` | object | Optional confirmation binding the token to a specific CSR. See [CSR binding](#optional-csr-binding-cnf). |
+| `once` | object | Optional once-per-scope anti-replay constraint: issue at most once per an external value (e.g. a backing instance id). See [Anti-replay scopes](#anti-replay-scopes-once). |
 
 The JWT layer requires `exp`, `aud`, `iss`, and `sub` to be present (`set_required_spec_claims`), validates `nbf` (when present) and `aud`, and applies a 60-second clock-skew leeway. `jti` and `nbf` are not required, so tokens from public OIDC issuers that omit them (for example Google, which has no `jti`) are still accepted; a token without `jti` is still one-time-enforced under a replay id derived from the token itself.
 
@@ -199,6 +200,23 @@ Each token's `jti` may be used only once. After all other checks pass — and on
 
 The denylist record's expiry is floored to outlive the validator's acceptance window (`exp` plus the replay leeway), so a token cannot be replayed within its own validity even across the skew window. DPoP proofs (used by renew/rekey/self-revoke) live in a separate `dpop#<jti>` namespace, so the two anti-replay spaces never collide. With the DynamoDB backend these records carry a `ttl` attribute for automatic expiry — see [storage](storage.md).
 
+### Anti-replay scopes (`once`)
+
+Where `jti` makes a *token* single-use, the optional `once` claim makes *issuance* single-use per an arbitrary value — a **replay scope**. The CA will issue at most one certificate per that value, regardless of how many distinct tokens carry it. Typical use: a provisioner minting tokens for a fleet stamps each token with the backing instance id, so a leaked or duplicated token cannot yield a second certificate for the same instance.
+
+The claim is an object:
+
+```json
+"once": { "scope": "i-0abc123def456", "exp": 1750000000 }
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scope` | string | yes | The uniqueness value. |
+| `exp` | number | no | Epoch-seconds expiry of the scope claim. When omitted, the claim is held until the **issued certificate's notAfter** (at most one *valid* certificate per scope). |
+
+The scope is namespaced to the provisioner (`prov:<name>`), so it never collides with another provisioner's scope, with a hook-asserted scope (`hook:<name>`), or with the credential `jti` space. Like the `jti`, the scope is claimed only after every check passes and just before issuance commits (so a hook or template failure never burns it); a conflict is surfaced as `401 Unauthorized` (`an issuance has already been performed for this scope`). The same constraint can be asserted by a [hook](hooks.md#anti-replay-scopes-once) instead — useful when the trustworthy value (e.g. a verified instance identity) is only known to the hook, not the token minter.
+
 ## Minting a token
 
 Use `ayane token` to sign an OTT with a provisioner's private key. The token is printed to stdout.
@@ -213,8 +231,10 @@ Use `ayane token` to sign an OTT with a provisioner's private key. The token is 
 | `--subject <s>` | yes | — | Certificate subject / common name (or, for `revoke`, the serial number). |
 | `--san <s>` | no (repeatable) | — | Permitted SANs. |
 | `--validity <dur>` | no | `5m` | Token lifetime, e.g. `5m`, `1h`. Units: `s`, `m`, `h`, `d`. |
+| `--once <value>` | no | — | Once-per-scope anti-replay value; issue at most once per this value. See [Anti-replay scopes](#anti-replay-scopes-once). |
+| `--once-expires-in <dur>` | no (requires `--once`) | cert notAfter | Lifetime of the `--once` scope claim, e.g. `24h`. |
 
-The CLI fills `iat` to now, `nbf` to now minus 5 seconds, `exp` to now plus the validity, and `jti` to a fresh random 128-bit hex value. The JWS algorithm is taken from the private key.
+The CLI fills `iat` to now, `nbf` to now minus 5 seconds, `exp` to now plus the validity, and `jti` to a fresh random 128-bit hex value. When `--once` is given it sets the `once` claim (`exp` computed from `--once-expires-in`, if provided). The JWS algorithm is taken from the private key.
 
 ### Mint a sign token
 

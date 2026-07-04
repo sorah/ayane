@@ -168,8 +168,30 @@ The hook replies with a single JSON object. Every field is optional; an absent f
 | `key_usage` | array of [key-usage name](configuration.md#key-usage-names) | Override the `keyUsage` set |
 | `extended_key_usage` | array of [EKU name](configuration.md#extended-key-usage-names) | Override the `extendedKeyUsage` set |
 | `additional_extensions` | array of object | Inject arbitrary extensions (replacing any with the same OID) |
+| `once` | array of object | Anti-replay scopes to claim before issuance — issue at most once per each `scope` (see [Anti-replay scopes](#anti-replay-scopes-once)) |
 
 Each `additional_extensions` entry is `{ "oid": "1.2.3.4", "value": "<standard-base64 of the DER extension value>", "critical": false }`. `value` is the inner extension value, not the surrounding OCTET STRING. The subject and authority key identifiers are always recomputed last, so they cannot be overridden by `additional_extensions`.
+
+### Anti-replay scopes (`once`)
+
+Beyond the per-token/per-proof one-time enforcement (the `jti`, which stops a *single credential* being reused), a hook can bind issuance to happen **at most once per an arbitrary value** — a *replay scope*. The canonical use is pinning one certificate to the backing compute resource: a hook that validates an EC2 instance identity document returns the instance id as a scope, and ayane then refuses to issue a second certificate for that instance until the scope expires.
+
+Each `once` entry is:
+
+```json
+{ "scope": "i-0abc123def456", "expires_at": "2026-06-15T00:00:00Z" }
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scope` | string | yes | The uniqueness value. A second issuance whose (namespaced) scope is still live is rejected as a replay |
+| `expires_at` | string (RFC 3339) | no | When the scope claim may be reclaimed. Defaults to the **issued certificate's notAfter** — i.e. at most one *valid* certificate per scope |
+
+Scopes are namespaced by the asserting hook (`hook:<name>`), so two different hooks that happen to emit the same value never collide, and a hook scope never collides with a token-carried scope (namespaced `prov:<provisioner>`) or with the credential `jti` space. A hook may assert several scopes at once (e.g. instance id and account id); all must be free for issuance to proceed.
+
+Claiming happens **after every applicable hook has permitted the request and just before the certificate is signed** — the same point at which the `jti` is consumed — so a denial or a transport failure never burns a scope. A scope conflict is surfaced as `401 Unauthorized` (`an issuance has already been performed for this scope`). Note the fail-closed tradeoff shared with `jti`: if signing fails *after* the scope is claimed (e.g. a transient KMS error), the scope stays held until it expires; for a long-lived scope this means a retry waits out the window.
+
+The same constraint can be carried by a provisioner token instead of a hook — see [provisioners](provisioners.md#anti-replay-scopes-once).
 
 ### Deny semantics
 
