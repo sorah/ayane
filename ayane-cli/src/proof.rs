@@ -32,7 +32,7 @@ pub fn make_ott(
         iat: now,
         nbf: now - 5,
         exp: now + validity_secs,
-        jti: random_id(),
+        jti: Some(random_id()),
         cnf: None,
     };
     let header = jsonwebtoken::Header::new(key.jwt_algorithm());

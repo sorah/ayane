@@ -257,6 +257,7 @@ impl Service {
 
         let validated = self.authorizer.validate(&req.token, request_url).await?;
         let claims = &validated.claims;
+        let authorized = validated.authorized;
 
         // Optional CSR binding via the `cnf` confirmation claim.
         if let Some(cnf) = &claims.cnf
@@ -268,17 +269,23 @@ impl Service {
             ));
         }
 
-        // SAN authorization: every requested SAN must be permitted by the token.
-        let allowed = allowed_sans(claims);
+        // SAN authorization: for an authorizing provisioner, every requested SAN
+        // must be permitted by the token, and an empty request means the full
+        // permitted set. An unauthorized provisioner's token does not constrain
+        // the SANs (its `sub`/`sans` may not even be DNS names) — the authorize
+        // webhook is responsible for setting the certificate's subject and SANs.
         let mut requested = csr.requested_sans()?;
-        if requested.is_empty() {
-            requested = allowed.clone();
-        }
-        for san in &requested {
-            if !allowed.contains(san) {
-                return Err(crate::error::Error::Forbidden(format!(
-                    "SAN {san} is not permitted by the token"
-                )));
+        if authorized {
+            let allowed = allowed_sans(claims);
+            if requested.is_empty() {
+                requested = allowed.clone();
+            }
+            for san in &requested {
+                if !allowed.contains(san) {
+                    return Err(crate::error::Error::Forbidden(format!(
+                        "SAN {san} is not permitted by the token"
+                    )));
+                }
             }
         }
 
@@ -292,6 +299,7 @@ impl Service {
 
         let context = crate::webhook::Context {
             operation: crate::webhook::Operation::Sign,
+            authorized,
             provisioner: Some(&validated.provisioner),
             subject: &claims.sub,
             sans: requested,
@@ -320,7 +328,7 @@ impl Service {
         // never burns a still-valid token. The TTL covers the validator leeway.
         self.claim_jti(
             "ott",
-            &claims.jti,
+            &validated.replay_id,
             system_time_from_epoch(claims.exp) + REPLAY_LEEWAY,
         )
         .await?;
@@ -504,6 +512,9 @@ impl Service {
             } else {
                 crate::webhook::Operation::Renew
             },
+            // Reissuance proves possession of the existing key via DPoP, so it is
+            // inherently authorized (default-allow).
+            authorized: true,
             // Reissuance is not tied to a provisioner, so only webhooks that
             // apply to all provisioners are consulted here.
             provisioner: None,
@@ -629,7 +640,7 @@ impl Service {
             }
             self.claim_jti(
                 "ott",
-                &validated.claims.jti,
+                &validated.replay_id,
                 system_time_from_epoch(validated.claims.exp) + REPLAY_LEEWAY,
             )
             .await?;

@@ -55,34 +55,6 @@ impl crate::webhook::WebhookProvider for TestWebhook {
     }
 }
 
-fn cert_not_after_unix(cert: &x509_cert::Certificate) -> i64 {
-    cert.tbs_certificate
-        .validity
-        .not_after
-        .to_unix_duration()
-        .as_secs() as i64
-}
-
-fn cert_san_strings(cert: &x509_cert::Certificate) -> Vec<String> {
-    use const_oid::AssociatedOid;
-    use der::Decode;
-    let mut out = Vec::new();
-    if let Some(exts) = &cert.tbs_certificate.extensions {
-        for ext in exts {
-            if ext.extn_id == x509_cert::ext::pkix::SubjectAltName::OID {
-                let san = x509_cert::ext::pkix::SubjectAltName::from_der(ext.extn_value.as_bytes())
-                    .unwrap();
-                for gn in san.0.iter() {
-                    if let Ok(s) = crate::san::San::try_from(gn) {
-                        out.push(s.to_string());
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 #[tokio::test]
 async fn webhook_enriches_sign_with_additional_san() {
     let webhook = TestWebhook::new(vec![crate::webhook::WebhookResponse {
@@ -248,6 +220,67 @@ async fn webhook_cannot_extend_sign_past_template_max() {
         cert_not_after_unix(&cert) <= unix_now() + 24 * 3600 + 120,
         "webhook notAfter must be clamped to the template max_validity"
     );
+}
+
+#[tokio::test]
+async fn unauthorized_provisioner_denied_without_webhook_allow() {
+    // A silent webhook does not grant an unauthorized provisioner.
+    let webhook = TestWebhook::new(vec![crate::webhook::WebhookResponse::default()]);
+    let webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>> = vec![webhook.clone()];
+    let h = setup_with_webhooks_authorized(Some(false), webhooks).await;
+    let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let err = h
+        .service
+        .sign(
+            ayane_protocol::SignRequest {
+                csr: make_csr(&leaf, "host.example", &["host.example"]),
+                token: make_token(
+                    &h.provisioner_pem,
+                    SIGN_URL,
+                    "host.example",
+                    &["host.example"],
+                ),
+                not_before: None,
+                not_after: None,
+            },
+            SIGN_URL,
+            None,
+        )
+        .await;
+    assert!(matches!(err, Err(crate::error::Error::Forbidden(_))));
+}
+
+#[tokio::test]
+async fn unauthorized_provisioner_issues_when_webhook_allows() {
+    let webhook = TestWebhook::new(vec![crate::webhook::WebhookResponse {
+        allow: Some(true),
+        ..Default::default()
+    }]);
+    let webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>> = vec![webhook.clone()];
+    let h = setup_with_webhooks_authorized(Some(false), webhooks).await;
+    let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let issued = h
+        .service
+        .sign(
+            ayane_protocol::SignRequest {
+                csr: make_csr(&leaf, "host.example", &["host.example"]),
+                token: make_token(
+                    &h.provisioner_pem,
+                    SIGN_URL,
+                    "host.example",
+                    &["host.example"],
+                ),
+                not_before: None,
+                not_after: None,
+            },
+            SIGN_URL,
+            None,
+        )
+        .await
+        .expect("issue succeeds once the webhook authorizes");
+
+    let cert = crate::x509::certificate_from_pem(&issued.certificate).unwrap();
+    assert!(cert_san_strings(&cert).contains(&"host.example".to_string()));
 }
 
 #[tokio::test]

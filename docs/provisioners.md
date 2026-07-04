@@ -1,12 +1,15 @@
 # Provisioners and issuance tokens
 
-A *provisioner* is a named trust anchor that authorizes certificate issuance. To request a new certificate from `POST /v1/sign`, a client presents a one-time issuance token (OTT): a JWT signed by a provisioner's private key, which the CA verifies against that provisioner's configured public JWK. This page covers how to configure a JWK provisioner, the exact OTT claim set, the policies enforced at signing, and how to mint a token with the `ayane` CLI.
+A *provisioner* is a named trust anchor for certificate issuance. To request a new certificate from `POST /v1/sign`, a client presents a token (a JWT) that the CA verifies against the provisioner's key. Ayane ships two provisioner types:
+
+- **`jwk`** — a single static public key held by the operator. The matching private key is distributed only to trusted minters, so a valid token both *authenticates* and *authorizes* issuance.
+- **`jwks`** — a remote key set from an external issuer (e.g. a public OIDC provider such as GitHub Actions). Anyone who can obtain such a token could present it, so a `jwks` token only *authenticates*; a separate [authorize webhook](webhooks.md) must *authorize* each request. See [JWKS / OIDC provisioners](#jwks--oidc-provisioners).
+
+This page covers configuring both types, the `authorized` flag, the OTT claim set, the policies enforced at signing, and how to mint a token with the `ayane` CLI.
 
 ## JWK provisioners
 
-Ayane ships a single provisioner type, `jwk`. Each provisioner holds a name and a public JWK; the operator distributes the matching private key to whoever is allowed to mint tokens. At validation time the CA selects the provisioner whose name equals the token's `iss` claim, then verifies the signature with that provisioner's key. The accepted JWS algorithm is *pinned* to the key type, which closes the JWT algorithm-confusion class of attacks (see [Algorithm pinning](#algorithm-pinning)).
-
-If a provisioner's `type` is anything other than `jwk`, startup fails with a configuration error.
+Each `jwk` provisioner holds a name and a public JWK; the operator distributes the matching private key to whoever is allowed to mint tokens. At validation time the CA selects the provisioner whose name equals the token's `iss` claim, then verifies the signature with that provisioner's key. The accepted JWS algorithm is *pinned* to the key type, which closes the JWT algorithm-confusion class of attacks (see [Algorithm pinning](#algorithm-pinning)).
 
 ### Configuration
 
@@ -15,10 +18,11 @@ Provisioners are configured under the top-level `provisioners` array in the conf
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | — | Provisioner name. Must match the token `iss` claim. |
-| `type` | string | no | `"jwk"` | Provisioner type. Only `"jwk"` is supported. |
+| `type` | string | yes | — | Provisioner type. `"jwk"` here; see [JWKS](#jwks--oidc-provisioners) for `"jwks"`. |
 | `key` | JWK object | yes | — | The public JWK used to verify token signatures. |
 | `audiences` | array of string | no | `[]` | Explicit audience allowlist. When empty, `aud` is bound to the request endpoint URL (see [Audience binding](#audience-binding)). |
 | `template` | string | no | unset | Name of a [certificate template](templates.md) applied to certificates issued under this provisioner. A dangling name fails issuance. |
+| `authorized` | bool | no | `true` (for `jwk`) | When `false`, a valid token only authenticates; an authorize [webhook](webhooks.md) must grant issuance. See [Authorization](#authorization-authorized). |
 
 The `key` field is a standard JWK. The key type determines the pinned algorithm:
 
@@ -58,7 +62,7 @@ The matching private key (PEM) is held by the token minter, never by the CA. See
 
 ### Listing provisioners
 
-`GET /v1/provisioners` returns each provisioner's `name`, `type` (always `jwk`), and `audiences`. The public key is never exposed.
+`GET /v1/provisioners` returns each provisioner's `name`, `type`, `audiences`, and `authorized`. Keys and JWKS URLs are never exposed.
 
 ```bash
 ayane provisioners --url https://ca.example.com
@@ -70,11 +74,55 @@ ayane provisioners --url https://ca.example.com
     {
       "name": "ci-issuer",
       "type": "jwk",
-      "audiences": ["https://ca.example.com/v1/sign"]
+      "audiences": ["https://ca.example.com/v1/sign"],
+      "authorized": true
     }
   ]
 }
 ```
+
+## JWKS / OIDC provisioners
+
+A `jwks` provisioner validates tokens minted by an *external* issuer whose verification keys are published as a JSON Web Key Set. This is how you accept workload identities such as GitHub Actions, GitLab CI, or a cloud OIDC provider without distributing a private key. Keys are fetched over HTTPS and cached in-process; the correct key is chosen by the token header's `kid`, and the set is refetched on an unknown `kid` so key rotation is picked up without a restart.
+
+Because a public issuer does not mint tokens specifically for your CA, a `jwks` token only **authenticates** the caller. It defaults to `authorized: false`, so an [authorize webhook](webhooks.md) must **authorize** each request — and, since OIDC tokens carry no `sans` (and a `sub` like `repo:org/app:ref:refs/heads/main` is not a DNS name), the webhook is also where the certificate's real subject and SANs are set.
+
+### Configuration
+
+The verification source is nested under `jwks`:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `jwks.jwks_url` | string | one of the two | URL of a JWK Set document. |
+| `jwks.openid_configuration_url` | string | one of the two | URL of an OIDC discovery document; its `jwks_uri` is followed to the keys. |
+| `jwks.issuer` | string | see below | The token `iss` this provisioner accepts. Defaults to `openid_configuration_url` with `/.well-known/openid-configuration` stripped (per OIDC Discovery), otherwise to `name`. Required with `jwks_url`. |
+
+`audiences` must be non-empty for `jwks` (set it to whatever the workload requests as its token `aud`). Both URLs must be `https` — an `http` loopback host is permitted for local/test use only. At fetch time the OIDC discovery document's own `issuer` must equal the resolved issuer.
+
+```json
+{
+  "name": "github-actions",
+  "type": "jwks",
+  "audiences": ["https://ca.example.com"],
+  "template": "server",
+  "jwks": {
+    "openid_configuration_url": "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
+  }
+}
+```
+
+A matching authorize webhook is mandatory; boot fails otherwise (see [Authorization](#authorization-authorized)).
+
+## Authorization (`authorized`)
+
+Every provisioner carries an effective `authorized` flag: `true` for `jwk`, `false` for `jwks`, unless set explicitly. It changes what a validated token means:
+
+- **`authorized: true`** — the token both authenticates and authorizes. Webhooks still run and may *deny* (default-allow), but none is required. This is the historical `jwk` behavior.
+- **`authorized: false`** — the token only authenticates. Issuance is *default-deny*: an applicable [webhook](webhooks.md) must explicitly return `allow: true`, or the request is refused with `403 Forbidden`. The webhook typically also sets the subject/SANs. To prevent a provisioner that can never issue, boot fails if an unauthorized provisioner has no webhook whose `provisioners` list is empty (all) or contains its name.
+
+A trusted internal issuer reached over `jwks` can opt back into full authorization with `"authorized": true` (no webhook required); conversely a `jwk` provisioner can be made webhook-gated with `"authorized": false`.
+
+For an unauthorized provisioner the token's `sans`/`sub` do **not** constrain the certificate (the [SAN subset policy](#san-subset-policy) is skipped) — the webhook is the sole authority on the issued identity.
 
 ## The one-time issuance token (OTT)
 
@@ -89,12 +137,12 @@ The OTT is a JWT signed by the provisioner key. It carries the standard register
 | `sub` | string | Subject: the certificate common name / primary identity. |
 | `sans` | array of string | Permitted Subject Alternative Names. When empty, only `sub` is permitted. See [SAN policy](#san-subset-policy). |
 | `iat` | number | Issued-at (epoch seconds). |
-| `nbf` | number | Not-before (epoch seconds). Validated. |
+| `nbf` | number | Not-before (epoch seconds). Validated when present. |
 | `exp` | number | Expiry (epoch seconds). Validated. |
-| `jti` | string | Unique token id, used for one-time (anti-replay) enforcement. See [One-time enforcement](#one-time-replay-protection). |
+| `jti` | string | Unique token id, used for one-time (anti-replay) enforcement. Optional: when absent the server derives the replay id from the token. See [One-time enforcement](#one-time-replay-protection). |
 | `cnf` | object | Optional confirmation binding the token to a specific CSR. See [CSR binding](#optional-csr-binding-cnf). |
 
-The JWT layer requires `exp`, `nbf`, `aud`, `iss`, and `sub` to be present (`set_required_spec_claims`), validates `nbf` and `aud`, and applies a 60-second clock-skew leeway.
+The JWT layer requires `exp`, `aud`, `iss`, and `sub` to be present (`set_required_spec_claims`), validates `nbf` (when present) and `aud`, and applies a 60-second clock-skew leeway. `jti` and `nbf` are not required, so tokens from public OIDC issuers that omit them (for example Google, which has no `jti`) are still accepted; a token without `jti` is still one-time-enforced under a replay id derived from the token itself.
 
 A minimal OTT payload:
 

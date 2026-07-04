@@ -190,6 +190,9 @@ pub async fn from_config(
 pub struct Context<'a> {
     /// The operation being performed.
     pub operation: Operation,
+    /// Whether the credential already authorizes issuance on its own. When
+    /// `false`, [`run`] denies unless an applicable webhook explicitly allows.
+    pub authorized: bool,
     /// Provisioner name, when issuance was token-authorized.
     pub provisioner: Option<&'a str>,
     /// Baseline subject common name.
@@ -228,6 +231,11 @@ pub struct Customization {
 /// Consult every applicable webhook in order, layering their responses onto a
 /// [`Customization`]. Returns [`crate::error::Error::Forbidden`] as soon as a
 /// webhook denies the request.
+///
+/// When [`ctx.authorized`](Context::authorized) is `false` the call is
+/// *default-deny*: at least one applicable webhook must explicitly grant it
+/// (`allow == Some(true)`), otherwise issuance is forbidden. An authorized
+/// request is *default-allow*: it proceeds unless a webhook denies it.
 pub async fn run(
     webhooks: &[std::sync::Arc<dyn WebhookProvider>],
     ctx: &Context<'_>,
@@ -242,7 +250,7 @@ pub async fn run(
         additional_extensions: Vec::new(),
     };
     if webhooks.is_empty() {
-        return Ok(customization);
+        return unauthorized_guard(ctx.authorized, false).map(|()| customization);
     }
 
     let request = WebhookRequest {
@@ -257,6 +265,7 @@ pub async fn run(
         not_after: chrono::DateTime::<chrono::Utc>::from(ctx.not_after),
     };
 
+    let mut explicitly_allowed = false;
     for webhook in webhooks {
         if !webhook.applies_to(ctx.provisioner) {
             continue;
@@ -268,9 +277,24 @@ pub async fn run(
                 .unwrap_or_else(|| format!("issuance denied by webhook {:?}", webhook.name()));
             return Err(crate::error::Error::Forbidden(reason));
         }
+        if response.allow == Some(true) {
+            explicitly_allowed = true;
+        }
         apply_response(&mut customization, &response)?;
     }
-    Ok(customization)
+    unauthorized_guard(ctx.authorized, explicitly_allowed).map(|()| customization)
+}
+
+/// Enforce default-deny for an unauthorized credential: unless a webhook
+/// explicitly allowed it, the request is forbidden.
+fn unauthorized_guard(authorized: bool, explicitly_allowed: bool) -> crate::error::Result<()> {
+    if authorized || explicitly_allowed {
+        Ok(())
+    } else {
+        Err(crate::error::Error::Forbidden(
+            "issuance was not authorized by any webhook".into(),
+        ))
+    }
 }
 
 /// Layer one webhook response onto the accumulating customization.
@@ -404,5 +428,107 @@ mod tests {
         assert!(json.get("previous_certificate_der").is_none());
         let back: super::WebhookRequest = serde_json::from_value(json).unwrap();
         assert_eq!(back.csr_der, Some(vec![1, 2, 3, 4]));
+    }
+
+    struct StubWebhook {
+        provisioners: Vec<String>,
+        response: super::WebhookResponse,
+    }
+
+    #[async_trait::async_trait]
+    impl super::WebhookProvider for StubWebhook {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn applies_to(&self, provisioner: Option<&str>) -> bool {
+            if self.provisioners.is_empty() {
+                return true;
+            }
+            matches!(provisioner, Some(p) if self.provisioners.iter().any(|n| n == p))
+        }
+        async fn call(
+            &self,
+            _request: &super::WebhookRequest,
+        ) -> crate::error::Result<super::WebhookResponse> {
+            Ok(self.response.clone())
+        }
+    }
+
+    fn stub(
+        provisioners: &[&str],
+        response: super::WebhookResponse,
+    ) -> std::sync::Arc<dyn super::WebhookProvider> {
+        std::sync::Arc::new(StubWebhook {
+            provisioners: provisioners.iter().map(|s| s.to_string()).collect(),
+            response,
+        })
+    }
+
+    fn allow() -> super::WebhookResponse {
+        super::WebhookResponse {
+            allow: Some(true),
+            ..Default::default()
+        }
+    }
+
+    fn deny() -> super::WebhookResponse {
+        super::WebhookResponse {
+            allow: Some(false),
+            ..Default::default()
+        }
+    }
+
+    fn ctx(authorized: bool) -> super::Context<'static> {
+        super::Context {
+            operation: super::Operation::Sign,
+            authorized,
+            provisioner: Some("p"),
+            subject: "example.com",
+            sans: vec![san("example.com")],
+            not_before: std::time::SystemTime::UNIX_EPOCH,
+            not_after: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(3600),
+            csr_der: None,
+            previous_certificate_der: None,
+        }
+    }
+
+    fn is_forbidden<T>(r: crate::error::Result<T>) -> bool {
+        matches!(r, Err(crate::error::Error::Forbidden(_)))
+    }
+
+    #[tokio::test]
+    async fn authorized_is_default_allow() {
+        assert!(super::run(&[], &ctx(true)).await.is_ok());
+        let silent = vec![stub(&[], super::WebhookResponse::default())];
+        assert!(super::run(&silent, &ctx(true)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn authorized_still_honors_denial() {
+        let webhooks = vec![stub(&[], deny())];
+        assert!(is_forbidden(super::run(&webhooks, &ctx(true)).await));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_with_no_webhook_is_denied() {
+        assert!(is_forbidden(super::run(&[], &ctx(false)).await));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_requires_explicit_allow() {
+        // A silent (default) response does not authorize an unauthorized request.
+        let silent = vec![stub(&[], super::WebhookResponse::default())];
+        assert!(is_forbidden(super::run(&silent, &ctx(false)).await));
+
+        // An explicit allow does.
+        let granting = vec![stub(&[], allow())];
+        assert!(super::run(&granting, &ctx(false)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn unauthorized_denied_when_allowing_webhook_does_not_apply() {
+        // The only webhook that would allow is scoped to a different provisioner.
+        let scoped = vec![stub(&["other"], allow())];
+        assert!(is_forbidden(super::run(&scoped, &ctx(false)).await));
     }
 }

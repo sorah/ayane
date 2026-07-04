@@ -165,15 +165,33 @@ Any other value fails startup with `unknown signature algorithm: <value>`.
 
 ## provisioners
 
-Each provisioner verifies one-time issuance tokens (OTT JWTs) presented to `POST /v1/sign`. This object has `deny_unknown_fields`. See [authentication](provisioners.md) for the full token-validation rules.
+Each provisioner verifies one-time issuance tokens (OTT JWTs) presented to `POST /v1/sign`. Common fields live on the provisioner object; the `type` discriminator selects a set of type-specific fields (`jwk` or `jwks`). See [authentication](provisioners.md) for the full token-validation rules.
+
+Common fields:
 
 | Field | Type | Required / default | Description |
 | --- | --- | --- | --- |
-| `name` | string | required | Provisioner name. Must equal the token `iss` claim. |
-| `type` | string | default `"jwk"` | Provisioner kind. Only `"jwk"` is supported. |
-| `key` | JWK object | required | The provisioner's public verification key, as a JSON Web Key. The JWK's key type pins the accepted JWT `alg` (alg-confusion-safe). |
-| `audiences` | array of string | default `[]` | Additional accepted token `aud` values. The server's own endpoint URL is always accepted; this list adds more. |
+| `name` | string | required | Provisioner name. For `jwk`, must equal the token `iss`; for `jwks`, a handle (the expected `iss` is `jwks.issuer`). |
+| `type` | string | required | Provisioner kind: `"jwk"` or `"jwks"`. |
+| `audiences` | array of string | default `[]` | Accepted token `aud` values. When empty, `aud` must equal the request endpoint URL; a non-empty list becomes a fixed allowlist. Required (non-empty) for `jwks`. |
 | `template` | string | default `null` | Name of the [template](#templates) used for certificates issued through this provisioner. Validated at boot. |
+| `authorized` | bool | default by kind (`jwk`→`true`, `jwks`→`false`) | When `false`, a validated token only *authenticates*; issuance must be granted by an authorize [webhook](webhooks.md). Boot fails if no applicable webhook exists. |
+
+Type `jwk` — a single static verification key:
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | JWK object | required | The provisioner's public verification key, as a JSON Web Key. The JWK's key type pins the accepted JWT `alg` (alg-confusion-safe). |
+
+Type `jwks` — a remote key set (fields nested under `jwks`):
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `jwks.jwks_url` | string | one of the two URL forms | URL of a JWK Set document. |
+| `jwks.openid_configuration_url` | string | one of the two URL forms | URL of an OIDC discovery document; its `jwks_uri` is followed to the keys. |
+| `jwks.issuer` | string | default derived | Expected token `iss`. Defaults to the `openid_configuration_url` with `/.well-known/openid-configuration` stripped, else `name`. Required for the `jwks_url` form. |
+
+Both URLs must be `https` (an `http` loopback host is allowed for local/test setups).
 
 ```json
 {
@@ -187,6 +205,18 @@ Each provisioner verifies one-time issuance tokens (OTT JWTs) presented to `POST
     "alg": "ES256",
     "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
     "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+  }
+}
+```
+
+```json
+{
+  "name": "github-actions",
+  "type": "jwks",
+  "audiences": ["https://ca.example.com"],
+  "template": "server",
+  "jwks": {
+    "openid_configuration_url": "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
   }
 }
 ```

@@ -24,6 +24,7 @@ pub async fn build_service(
             )));
         }
     }
+    crate::config::validate_provisioner_authorization(config)?;
 
     let key = crate::key_provider::from_config(&config.ca.key).await?;
     let issuer_pem = config.ca.certificate.load()?;
@@ -46,7 +47,7 @@ pub async fn build_service(
     )?);
 
     let authorizer: std::sync::Arc<dyn crate::authorizer::Authorizer> = std::sync::Arc::new(
-        crate::authorizer::jwt::JwtAuthorizer::from_configs(&config.provisioners)?,
+        crate::authorizer::ProvisionerAuthorizer::from_configs(&config.provisioners)?,
     );
 
     let storage = crate::storage::from_config(&config.storage).await?;
