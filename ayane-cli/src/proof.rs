@@ -1,6 +1,6 @@
 //! Mint issuance tokens (OTT) and RFC 9449 DPoP proofs.
 
-fn unix_now() -> i64 {
+pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -22,6 +22,7 @@ pub fn make_ott(
     subject: &str,
     sans: &[String],
     validity_secs: i64,
+    once: Option<ayane_protocol::OnceScope>,
 ) -> anyhow::Result<String> {
     let now = unix_now();
     let claims = ayane_protocol::OttClaims {
@@ -34,6 +35,7 @@ pub fn make_ott(
         exp: now + validity_secs,
         jti: Some(random_id()),
         cnf: None,
+        once,
     };
     let header = jsonwebtoken::Header::new(key.jwt_algorithm());
     Ok(jsonwebtoken::encode(

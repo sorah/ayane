@@ -284,6 +284,99 @@ async fn unauthorized_provisioner_issues_when_hook_allows() {
 }
 
 #[tokio::test]
+async fn hook_once_scope_limits_issuance_to_one_per_scope() {
+    // A hook that pins issuance to a backing instance id: at most one
+    // certificate per that id.
+    let hook = TestHook::new(vec![crate::hook::HookResponse {
+        once: vec![crate::hook::OnceScope {
+            scope: "i-0abc".to_string(),
+            expires_at: None,
+        }],
+        ..Default::default()
+    }]);
+    let hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>> = vec![hook.clone()];
+    let h = setup_with_hooks(hooks).await;
+
+    let sign = async |h: &Harness| {
+        let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        h.service
+            .sign(
+                ayane_protocol::SignRequest {
+                    csr: make_csr(&leaf, "host.example", &["host.example"]),
+                    token: make_token(
+                        &h.provisioner_pem,
+                        SIGN_URL,
+                        "host.example",
+                        &["host.example"],
+                    ),
+                    not_before: None,
+                    not_after: None,
+                },
+                SIGN_URL,
+                None,
+            )
+            .await
+    };
+
+    sign(&h)
+        .await
+        .expect("first issuance for the instance succeeds");
+    // A second, independent request (fresh token and key) for the same instance
+    // is rejected as a replay of the scope.
+    let replay = sign(&h).await;
+    assert!(
+        matches!(replay, Err(crate::error::Error::Unauthorized(_))),
+        "second issuance for the same scope must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn token_once_scope_limits_issuance_to_one_per_scope() {
+    // The scope may instead be carried by the provisioner token itself.
+    let h = setup().await;
+
+    async fn sign(
+        h: &Harness,
+        scope: &str,
+    ) -> crate::error::Result<ayane_protocol::CertificateResponse> {
+        let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let token = make_token_with_once(
+            &h.provisioner_pem,
+            SIGN_URL,
+            "host.example",
+            ayane_protocol::OnceScope {
+                scope: scope.to_string(),
+                exp: None,
+            },
+        );
+        h.service
+            .sign(
+                ayane_protocol::SignRequest {
+                    csr: make_csr(&leaf, "host.example", &["host.example"]),
+                    token,
+                    not_before: None,
+                    not_after: None,
+                },
+                SIGN_URL,
+                None,
+            )
+            .await
+    }
+
+    sign(&h, "i-1")
+        .await
+        .expect("first issuance for i-1 succeeds");
+    let replay = sign(&h, "i-1").await;
+    assert!(
+        matches!(replay, Err(crate::error::Error::Unauthorized(_))),
+        "second issuance for i-1 must be rejected as a replay"
+    );
+    sign(&h, "i-2")
+        .await
+        .expect("a distinct scope value still issues");
+}
+
+#[tokio::test]
 async fn hook_cannot_extend_renewal_past_original_lifetime() {
     // On reissue there is no template to clamp against; a hook must not be
     // able to extend the renewed certificate beyond the previous lifetime.

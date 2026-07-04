@@ -202,25 +202,63 @@ impl Service {
         }
     }
 
-    /// Atomically claim a one-time `jti`, namespaced by credential `kind`
-    /// (`"ott"` vs `"dpop"`) so the two anti-replay spaces never collide. The
-    /// `expires_at` is floored to outlive the validator's acceptance window.
+    /// Atomically claim a one-time key, flooring its expiry to outlive the
+    /// validator's acceptance window. A conflict — the key was already claimed —
+    /// is surfaced to the caller as `Unauthorized` carrying `conflict_msg`.
+    async fn claim_once(
+        &self,
+        key: &str,
+        expires_at: std::time::SystemTime,
+        conflict_msg: &str,
+    ) -> crate::error::Result<()> {
+        let floor = std::time::SystemTime::now() + REPLAY_LEEWAY;
+        let expires_at = expires_at.max(floor);
+        match self.storage.claim_token(key, expires_at).await {
+            Ok(()) => Ok(()),
+            Err(crate::error::Error::Conflict(_)) => {
+                Err(crate::error::Error::Unauthorized(conflict_msg.into()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Claim a credential's one-time `jti`, namespaced by credential `kind`
+    /// (`"ott"` vs `"dpop"`) so the two anti-replay spaces never collide.
     async fn claim_jti(
         &self,
         kind: &str,
         jti: &str,
         expires_at: std::time::SystemTime,
     ) -> crate::error::Result<()> {
-        let key = format!("{kind}#{jti}");
-        let floor = std::time::SystemTime::now() + REPLAY_LEEWAY;
-        let expires_at = expires_at.max(floor);
-        match self.storage.claim_token(&key, expires_at).await {
-            Ok(()) => Ok(()),
-            Err(crate::error::Error::Conflict(_)) => Err(crate::error::Error::Unauthorized(
-                "token or proof has already been used".into(),
-            )),
-            Err(e) => Err(e),
+        self.claim_once(
+            &format!("{kind}#{jti}"),
+            expires_at,
+            "token or proof has already been used",
+        )
+        .await
+    }
+
+    /// Claim every once-per-scope constraint before issuance commits. Each key
+    /// is `scope#<namespace>#<value>`, the namespace isolating token- from
+    /// hook-asserted scopes (and one provisioner/hook from another). A scope
+    /// without its own expiry is held until `default_expiry` (the certificate
+    /// notAfter — at most one valid certificate per scope).
+    async fn claim_once_scopes(
+        &self,
+        scopes: &[crate::hook::OnceClaim],
+        default_expiry: std::time::SystemTime,
+    ) -> crate::error::Result<()> {
+        for scope in scopes {
+            let key = format!("scope#{}#{}", scope.namespace, scope.value);
+            let expires_at = scope.expires_at.unwrap_or(default_expiry);
+            self.claim_once(
+                &key,
+                expires_at,
+                "an issuance has already been performed for this scope",
+            )
+            .await?;
         }
+        Ok(())
     }
 
     /// `POST /v1/sign`.
@@ -323,15 +361,29 @@ impl Service {
             ));
         }
 
-        // Claim the one-time token only after every check has passed and
-        // issuance is about to commit, so a transient hook/template failure
-        // never burns a still-valid token. The TTL covers the validator leeway.
+        // Assemble the once-per-scope constraints: those asserted by hooks, plus
+        // a token-carried scope namespaced to the provisioner.
+        let mut once_scopes = std::mem::take(&mut custom.once_claims);
+        if let Some(once) = &claims.once {
+            once_scopes.push(crate::hook::OnceClaim {
+                namespace: format!("prov:{}", validated.provisioner),
+                value: once.scope.clone(),
+                expires_at: once.exp.map(system_time_from_epoch),
+            });
+        }
+
+        // Claim the one-time token and every scope only after every check has
+        // passed and issuance is about to commit, so a transient hook/template
+        // failure never burns a still-valid credential. The token TTL covers the
+        // validator leeway; scope expiries default to the certificate notAfter.
         self.claim_jti(
             "ott",
             &validated.replay_id,
             system_time_from_epoch(claims.exp) + REPLAY_LEEWAY,
         )
         .await?;
+        self.claim_once_scopes(&once_scopes, custom.not_after)
+            .await?;
 
         let common_name = custom
             .subject_common_name
@@ -538,10 +590,14 @@ impl Service {
             ));
         }
 
-        // Claim the DPoP proof's jti only once issuance is about to commit, so a
-        // hook denial never burns an otherwise-valid proof.
+        // Claim the DPoP proof's jti and any hook-asserted scopes only once
+        // issuance is about to commit, so a hook denial never burns an
+        // otherwise-valid proof.
         let proof_exp = proof.issued_at + self.dpop_max_age + REPLAY_LEEWAY;
         self.claim_jti("dpop", &proof.jti, proof_exp).await?;
+        let once_scopes = std::mem::take(&mut custom.once_claims);
+        self.claim_once_scopes(&once_scopes, custom.not_after)
+            .await?;
 
         let subject = custom
             .subject_common_name

@@ -27,6 +27,14 @@ pub struct TokenArgs {
     /// Token lifetime, e.g. `5m`.
     #[arg(long, default_value = "5m")]
     validity: String,
+    /// Once-per-scope anti-replay value: issue at most once per this value
+    /// (e.g. a backing instance id) until `--once-expires-in` elapses.
+    #[arg(long)]
+    once: Option<String>,
+    /// Lifetime of the `--once` scope claim, e.g. `24h`. Defaults to the issued
+    /// certificate's notAfter when omitted.
+    #[arg(long, requires = "once")]
+    once_expires_in: Option<String>,
 }
 
 pub fn run(args: TokenArgs) -> anyhow::Result<()> {
@@ -37,6 +45,19 @@ pub fn run(args: TokenArgs) -> anyhow::Result<()> {
         (None, None) => anyhow::bail!("provide --audience or --url"),
     };
     let validity = humantime::parse_duration(&args.validity)?.as_secs() as i64;
+    let once = match args.once {
+        Some(scope) => {
+            let exp = match args.once_expires_in {
+                Some(ref d) => {
+                    let secs = humantime::parse_duration(d)?.as_secs() as i64;
+                    Some(crate::proof::unix_now() + secs)
+                }
+                None => None,
+            };
+            Some(ayane_protocol::OnceScope { scope, exp })
+        }
+        None => None,
+    };
     let token = crate::proof::make_ott(
         &key,
         &args.issuer,
@@ -44,6 +65,7 @@ pub fn run(args: TokenArgs) -> anyhow::Result<()> {
         &args.subject,
         &args.sans,
         validity,
+        once,
     )?;
     println!("{token}");
     Ok(())

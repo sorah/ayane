@@ -129,6 +129,7 @@ mod tests {
             exp: t + 300,
             jti: Some("jti-1".into()),
             cnf: None,
+            once: None,
         }
     }
 

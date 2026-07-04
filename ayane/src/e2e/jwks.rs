@@ -85,6 +85,7 @@ fn oidc_token(secret: &p256::SecretKey, issuer: &str, subject: &str) -> String {
         exp: now + 300,
         jti: None,
         cnf: None,
+        once: None,
     };
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
     header.kid = Some(KID.to_string());

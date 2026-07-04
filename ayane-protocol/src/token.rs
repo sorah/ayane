@@ -33,6 +33,31 @@ pub struct OttClaims {
     /// Optional confirmation binding the token to a specific CSR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cnf: Option<Confirmation>,
+    /// Optional once-per-scope constraint: bind issuance to happen at most once
+    /// per an external identity (e.g. a backing EC2 instance id), independent of
+    /// the per-token `jti`. See [`OnceScope`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<OnceScope>,
+}
+
+/// A once-per-scope anti-replay constraint carried by an OTT.
+///
+/// Where `jti` makes a token itself single-use, a `once` scope makes *issuance*
+/// single-use per an arbitrary value: the CA will issue at most one certificate
+/// per [`scope`](Self::scope) until [`exp`](Self::exp), regardless of how many
+/// distinct tokens carry that scope. Typical use: pin one certificate to one
+/// backing instance for the certificate's lifetime.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OnceScope {
+    /// The uniqueness value, e.g. a backing EC2 instance id. Issuance is
+    /// rejected as a replay when this scope was already consumed (within the
+    /// provisioner's namespace) and has not yet expired.
+    pub scope: String,
+    /// Epoch-seconds expiry of the scope claim. When omitted, the claim is held
+    /// until the issued certificate's notAfter (at most one *valid* certificate
+    /// per scope).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exp: Option<i64>,
 }
 
 /// RFC 7800-style confirmation claim.

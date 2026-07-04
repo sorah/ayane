@@ -161,6 +161,36 @@ fn make_token(provisioner_pem: &str, audience: &str, subject: &str, sans: &[&str
         exp: now + 300,
         jti: Some(rand_jti()),
         cnf: None,
+        once: None,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),
+        &claims,
+        &encoding_key,
+    )
+    .unwrap()
+}
+
+/// Mint a token that also carries a once-per-scope anti-replay constraint.
+fn make_token_with_once(
+    provisioner_pem: &str,
+    audience: &str,
+    subject: &str,
+    once: ayane_protocol::OnceScope,
+) -> String {
+    let encoding_key = jsonwebtoken::EncodingKey::from_ec_pem(provisioner_pem.as_bytes()).unwrap();
+    let now = unix_now();
+    let claims = ayane_protocol::OttClaims {
+        iss: "prov1".to_string(),
+        aud: audience.to_string(),
+        sub: subject.to_string(),
+        sans: vec![subject.to_string()],
+        iat: now,
+        nbf: now - 5,
+        exp: now + 300,
+        jti: Some(rand_jti()),
+        cnf: None,
+        once: Some(once),
     };
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),

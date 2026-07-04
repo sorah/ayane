@@ -18,7 +18,7 @@ pub use crate::api::{
 };
 pub use crate::dpop::DpopClaims;
 pub use crate::problem::ProblemDetails;
-pub use crate::token::{Confirmation, OttClaims};
+pub use crate::token::{Confirmation, OnceScope, OttClaims};
 
 /// HTTP header carrying the RFC 9449 DPoP proof JWT.
 pub const DPOP_HEADER: &str = "DPoP";

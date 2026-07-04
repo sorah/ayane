@@ -108,6 +108,35 @@ impl RawExtension {
     }
 }
 
+/// A once-per-scope anti-replay constraint asserted by a hook.
+///
+/// The hook variant of [`ayane_protocol::OnceScope`]: it makes issuance happen
+/// at most once per [`scope`](Self::scope) until [`expires_at`](Self::expires_at),
+/// namespaced to the asserting hook so distinct hooks never collide. Typical
+/// use: an identity-verifying hook (e.g. one that validates an EC2 instance
+/// identity document) pins issuance to the backing instance id.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OnceScope {
+    /// The uniqueness value, e.g. a backing EC2 instance id.
+    pub scope: String,
+    /// Expiry of the scope claim. When omitted, the claim is held until the
+    /// issued certificate's notAfter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A resolved anti-replay claim to make before issuance, namespaced so that
+/// scopes from different sources never collide. A `None` `expires_at` inherits
+/// the issued certificate's notAfter at claim time.
+pub struct OnceClaim {
+    /// Namespace isolating this scope's keyspace, e.g. `"hook:aws-identity"`.
+    pub namespace: String,
+    /// The uniqueness value within the namespace.
+    pub value: String,
+    /// Absolute expiry, or `None` to default to the certificate notAfter.
+    pub expires_at: Option<std::time::SystemTime>,
+}
+
 /// A hook's typed reply. Every field is optional: an absent field leaves the
 /// corresponding certificate property at its pre-hook value.
 #[serde_with::serde_as]
@@ -134,6 +163,11 @@ pub struct HookResponse {
     pub extended_key_usage: Option<Vec<crate::template::ExtKeyUsageName>>,
     /// Inject arbitrary extensions (replacing any with the same OID).
     pub additional_extensions: Vec<RawExtension>,
+    /// Anti-replay scopes to claim before issuance: the CA issues at most once
+    /// per each `scope` until its `expires_at`. A conflict denies the request as
+    /// a replay. Claimed only once every applicable hook has permitted the
+    /// request, so a later denial never burns a scope.
+    pub once: Vec<OnceScope>,
 }
 
 /// An invokable hook.
@@ -230,6 +264,9 @@ pub struct Customization {
     pub extended_key_usage: Option<Vec<crate::template::ExtKeyUsageName>>,
     /// Extra extensions to layer onto the certificate.
     pub additional_extensions: Vec<x509_cert::ext::Extension>,
+    /// Anti-replay scopes accumulated from every applicable hook, each already
+    /// namespaced to its asserting hook.
+    pub once_claims: Vec<OnceClaim>,
 }
 
 /// Consult every applicable hook in order, layering their responses onto a
@@ -252,6 +289,7 @@ pub async fn run(
         key_usage: None,
         extended_key_usage: None,
         additional_extensions: Vec::new(),
+        once_claims: Vec::new(),
     };
     if hooks.is_empty() {
         return unauthorized_guard(ctx.authorized, false).map(|()| customization);
@@ -283,6 +321,13 @@ pub async fn run(
         }
         if response.allow == Some(true) {
             explicitly_allowed = true;
+        }
+        for scope in &response.once {
+            customization.once_claims.push(OnceClaim {
+                namespace: format!("hook:{}", hook.name()),
+                value: scope.scope.clone(),
+                expires_at: scope.expires_at.map(std::time::SystemTime::from),
+            });
         }
         apply_response(&mut customization, &response)?;
     }
@@ -352,6 +397,7 @@ mod tests {
             key_usage: None,
             extended_key_usage: None,
             additional_extensions: Vec::new(),
+            once_claims: Vec::new(),
         }
     }
 
