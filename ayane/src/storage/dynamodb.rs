@@ -308,12 +308,26 @@ impl crate::storage::Storage for DynamoDbStorage {
             aws_sdk_dynamodb::types::AttributeValue::N(ttl.to_string()),
         );
 
+        // Overwrite a prior claim only once it has logically expired. DynamoDB's
+        // TTL sweep is lazy (it may lag hours), so an expired item can linger;
+        // without the `#ttl <= :now` arm a long-lived scope would keep rejecting
+        // legitimate re-issuance until the sweep runs. SQLite reclaims the same
+        // way (delete-then-insert). `#ttl` aliases the reserved word `ttl`.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let result = self
             .client
             .put_item()
             .table_name(&self.table_name)
             .set_item(Some(item))
-            .condition_expression("attribute_not_exists(pk)")
+            .condition_expression("attribute_not_exists(pk) OR #ttl <= :now")
+            .expression_attribute_names("#ttl", "ttl")
+            .expression_attribute_values(
+                ":now",
+                aws_sdk_dynamodb::types::AttributeValue::N(now.to_string()),
+            )
             .send()
             .await;
         match result {
