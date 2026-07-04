@@ -132,6 +132,30 @@ pub trait Storage: Send + Sync {
         value: Vec<u8>,
         expires_at: std::time::SystemTime,
     ) -> crate::error::Result<()>;
+
+    /// Delete every anti-replay and cache row whose expiry is at or before
+    /// `now`, returning the number removed. The permanent certificate and
+    /// revocation inventories never expire and are left untouched.
+    ///
+    /// Backends with native expiry (DynamoDB TTL) may no-op; the durable SQLite
+    /// backend has none, so [`run_reaper`] drives this on a timer to keep the
+    /// `tokens` and `cache` tables from growing without bound.
+    async fn reap_expired(&self, now: std::time::SystemTime) -> crate::error::Result<u64>;
+}
+
+/// Periodically [`reap`](Storage::reap_expired) expired rows until the process
+/// exits. Spawned only by the standalone runtime — under AWS Lambda the process
+/// is not long-lived and the DynamoDB backend reaps via native TTL.
+pub async fn run_reaper(storage: std::sync::Arc<dyn Storage>, interval: std::time::Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        match storage.reap_expired(std::time::SystemTime::now()).await {
+            Ok(0) => {}
+            Ok(reaped) => tracing::debug!(reaped, "reaped expired storage rows"),
+            Err(e) => tracing::warn!(error = %e, "storage reap failed"),
+        }
+    }
 }
 
 /// Read a JSON-serialized cached value via [`Storage::get_cache`], or `None` when

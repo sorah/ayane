@@ -7,6 +7,9 @@
 //! the standalone runtime; under Lambda the Function URL terminates TLS, so the
 //! `tls` configuration is ignored there.
 
+/// How often the standalone runtime reaps expired anti-replay and cache rows.
+const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// Run the server, auto-selecting standalone vs. Lambda mode.
 pub async fn run(
     state: crate::http::AppState,
@@ -15,6 +18,7 @@ pub async fn run(
 ) -> crate::error::Result<()> {
     let ca = state.service.ca();
     let external_url = state.external_url.clone();
+    let storage = state.service.storage();
     let app = crate::http::router(state);
 
     if std::env::var_os("AWS_LAMBDA_RUNTIME_API").is_some() {
@@ -33,6 +37,10 @@ pub async fn run(
             .await
             .map_err(|e| crate::error::Error::Internal(format!("lambda runtime error: {e}")));
     }
+
+    // Standalone durable backends (SQLite) have no native TTL, so reap expired
+    // anti-replay and cache rows on a timer. The DynamoDB backend no-ops here.
+    tokio::spawn(crate::storage::run_reaper(storage, REAP_INTERVAL));
 
     if tls.enabled {
         serve_tls(app, listen, tls, ca, external_url.as_deref()).await

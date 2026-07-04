@@ -60,7 +60,11 @@ impl SqliteStorage {
                  key        TEXT PRIMARY KEY,
                  value      BLOB NOT NULL,
                  expires_at INTEGER NOT NULL
-             );",
+             );
+             -- Support reaping expired rows by expiry alone (the per-key lookups
+             -- are already served by each table's primary key).
+             CREATE INDEX IF NOT EXISTS ix_tokens_expires_at ON tokens (expires_at);
+             CREATE INDEX IF NOT EXISTS ix_cache_expires_at ON cache (expires_at);",
         )
         .map_err(|e| crate::error::Error::Config(format!("init sqlite schema: {e}")))?;
         Ok(SqliteStorage {
@@ -329,6 +333,30 @@ impl crate::storage::Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn reap_expired(&self, now: std::time::SystemTime) -> crate::error::Result<u64> {
+        let now = unix_secs(now)?;
+        self.with_conn(move |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|e| crate::error::Error::Internal(format!("sqlite reap_expired: {e}")))?;
+            let mut reaped = 0u64;
+            for table in ["tokens", "cache"] {
+                reaped += tx
+                    .execute(
+                        &format!("DELETE FROM {table} WHERE expires_at <= ?1"),
+                        [now],
+                    )
+                    .map_err(|e| {
+                        crate::error::Error::Internal(format!("sqlite reap_expired: {e}"))
+                    })? as u64;
+            }
+            tx.commit()
+                .map_err(|e| crate::error::Error::Internal(format!("sqlite reap_expired: {e}")))?;
+            Ok(reaped)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -453,6 +481,37 @@ mod tests {
         // The prior claim has expired, so re-claiming succeeds.
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
         storage.claim_token("jti-1", future).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reap_expired_removes_only_expired_rows() {
+        use crate::storage::Storage;
+        let storage = super::SqliteStorage::open_in_memory().unwrap();
+        let now = std::time::SystemTime::now();
+        let past = now - std::time::Duration::from_secs(60);
+        let future = now + std::time::Duration::from_secs(60);
+
+        storage.claim_token("old", past).await.unwrap();
+        storage.claim_token("fresh", future).await.unwrap();
+        storage.set_cache("old", b"v".to_vec(), past).await.unwrap();
+        storage
+            .set_cache("fresh", b"v".to_vec(), future)
+            .await
+            .unwrap();
+
+        // Both expired rows go; the two fresh rows stay.
+        assert_eq!(storage.reap_expired(now).await.unwrap(), 2);
+        assert_eq!(
+            storage.get_cache("fresh").await.unwrap(),
+            Some(b"v".to_vec())
+        );
+        assert!(matches!(
+            storage.claim_token("fresh", future).await,
+            Err(crate::error::Error::Conflict(_))
+        ));
+
+        // A second pass finds nothing left to reap.
+        assert_eq!(storage.reap_expired(now).await.unwrap(), 0);
     }
 
     #[tokio::test]

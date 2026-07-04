@@ -437,6 +437,12 @@ impl crate::storage::Storage for DynamoDbStorage {
             })?;
         Ok(())
     }
+
+    async fn reap_expired(&self, _now: std::time::SystemTime) -> crate::error::Result<u64> {
+        // Token and cache items carry a `ttl` attribute; DynamoDB's native TTL
+        // reaps them. Nothing to delete here.
+        Ok(0)
+    }
 }
 
 #[cfg(test)]
@@ -654,6 +660,18 @@ mod tests {
         let expires = std::time::SystemTime::now() + std::time::Duration::from_secs(300);
         let err = storage.claim_token("jti-1", expires).await.unwrap_err();
         assert!(matches!(err, crate::error::Error::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn reap_expired_is_a_noop() {
+        use crate::storage::Storage;
+        // Native TTL handles reaping, so no DynamoDB call is made (empty mock).
+        let storage = super::DynamoDbStorage::new(client(&[]), "tbl".to_string());
+        let reaped = storage
+            .reap_expired(std::time::SystemTime::now())
+            .await
+            .unwrap();
+        assert_eq!(reaped, 0);
     }
 
     #[tokio::test]

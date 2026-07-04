@@ -71,6 +71,12 @@ impl Service {
         std::sync::Arc::clone(&self.ca)
     }
 
+    /// The revocation/anti-replay store, for background maintenance (the
+    /// standalone reaper — see [`crate::storage::run_reaper`]).
+    pub fn storage(&self) -> std::sync::Arc<dyn crate::storage::Storage> {
+        std::sync::Arc::clone(&self.storage)
+    }
+
     /// `GET /v1/health`.
     pub fn health(&self) -> ayane_protocol::HealthResponse {
         ayane_protocol::HealthResponse {

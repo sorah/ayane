@@ -204,10 +204,16 @@ See the [deployment guide](deployment.md) for the full IAM policy and AWS wiring
 
 The `sqlite` backend stores all of the above in one SQLite database (the inventory, revocations, the token denylist, and the `cache` table). With the default `:memory:` path it is an in-process database — simple and fast but **not durable** and **not shared** across instances: restarting the server forgets all state, and two instances do not see each other's. A filesystem `path` makes it durable for a single node, but it is still local to that node. Use `:memory:` for development and tests; use a filesystem path only for single-node deployments. For any multi-instance or Lambda deployment, use DynamoDB.
 
+Every per-row lookup (certificate, revocation, token claim, cache entry) is keyed by that table's primary key, which SQLite indexes automatically. The `tokens` and `cache` tables additionally carry an index on `expires_at` (`ix_tokens_expires_at`, `ix_cache_expires_at`) to support reaping.
+
+### Reaping expired rows
+
+SQLite has no native TTL, so — unlike DynamoDB — expired token/scope and cache rows do not disappear on their own. The standalone server therefore runs a background reaper that hourly deletes rows whose `expires_at` has passed (`DELETE FROM tokens WHERE expires_at <= now`, and likewise for `cache`), bounding growth of those two tables. The permanent certificate and revocation inventories are never reaped. The reaper is skipped under AWS Lambda (which uses DynamoDB and its native TTL); a lazily-accessed expired row is still dropped on the next touch of the same key regardless.
+
 ## Operational notes
 
 - For any multi-instance or Lambda deployment, use DynamoDB so that the inventory, anti-replay, and revocation are consistent across all instances.
-- Token-denylist growth is bounded by enabling DynamoDB TTL on `ttl`; the issued-certificate inventory grows with every issuance and is never reaped automatically.
+- Token-denylist and cache growth is bounded automatically: DynamoDB via TTL on `ttl`, SQLite via the standalone server's hourly reaper. The issued-certificate inventory grows with every issuance and is never reaped.
 - A storage outage fails closed for issuance: the token claim and the inventory write must both complete before a certificate is returned, so issuance never proceeds without recording it.
 
 ## See also
