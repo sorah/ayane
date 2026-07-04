@@ -19,7 +19,7 @@ pub struct ValidatedToken {
     /// Template name override carried by the provisioner, if any.
     pub template: Option<String>,
     /// Whether the provisioner authorizes issuance on its own. When `false`, an
-    /// authorize webhook must explicitly grant the request.
+    /// authorize hook must explicitly grant the request.
     pub authorized: bool,
     /// Anti-replay identifier: the token's `jti` when present, otherwise a value
     /// derived from the token so one-time enforcement still applies.
@@ -57,7 +57,7 @@ pub(crate) struct VerifierInfo {
 /// Scheme-specific verification of a presented bearer token. One implementation
 /// per authentication scheme (a static JWK, a remote JWKS, ...). This layer only
 /// *authenticates* the token and extracts its claims — authorization (the
-/// `authorized` flag and webhook gating) is applied by [`ProvisionerAuthorizer`]
+/// `authorized` flag and hook gating) is applied by [`ProvisionerAuthorizer`]
 /// and [`crate::service`], not here.
 #[async_trait::async_trait]
 pub(crate) trait TokenVerifier: Send + Sync {

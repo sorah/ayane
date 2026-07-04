@@ -56,7 +56,7 @@ async fn renewal_preserves_original_eku() {
         storage: std::sync::Arc::new(
             crate::storage::sqlite::SqliteStorage::open_in_memory().unwrap(),
         ),
-        webhooks: Vec::new(),
+        hooks: Vec::new(),
         events: Vec::new(),
         templates,
         // Default differs from the issuing template, to prove renewal does not

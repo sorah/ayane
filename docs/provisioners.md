@@ -3,7 +3,7 @@
 A *provisioner* is a named trust anchor for certificate issuance. To request a new certificate from `POST /v1/sign`, a client presents a token (a JWT) that the CA verifies against the provisioner's key. Ayane ships two provisioner types:
 
 - **`jwk`** — a single static public key held by the operator. The matching private key is distributed only to trusted minters, so a valid token both *authenticates* and *authorizes* issuance.
-- **`jwks`** — a remote key set from an external issuer (e.g. a public OIDC provider such as GitHub Actions). Anyone who can obtain such a token could present it, so a `jwks` token only *authenticates*; a separate [authorize webhook](webhooks.md) must *authorize* each request. See [JWKS / OIDC provisioners](#jwks--oidc-provisioners).
+- **`jwks`** — a remote key set from an external issuer (e.g. a public OIDC provider such as GitHub Actions). Anyone who can obtain such a token could present it, so a `jwks` token only *authenticates*; a separate [authorize hook](hooks.md) must *authorize* each request. See [JWKS / OIDC provisioners](#jwks--oidc-provisioners).
 
 This page covers configuring both types, the `authorized` flag, the OTT claim set, the policies enforced at signing, and how to mint a token with the `ayane` CLI.
 
@@ -22,7 +22,7 @@ Provisioners are configured under the top-level `provisioners` array in the conf
 | `key` | JWK object | yes | — | The public JWK used to verify token signatures. |
 | `audiences` | array of string | no | `[]` | Explicit audience allowlist. When empty, `aud` is bound to the request endpoint URL (see [Audience binding](#audience-binding)). |
 | `template` | string | no | unset | Name of a [certificate template](templates.md) applied to certificates issued under this provisioner. A dangling name fails issuance. |
-| `authorized` | bool | no | `true` (for `jwk`) | When `false`, a valid token only authenticates; an authorize [webhook](webhooks.md) must grant issuance. See [Authorization](#authorization-authorized). |
+| `authorized` | bool | no | `true` (for `jwk`) | When `false`, a valid token only authenticates; an authorize [hook](hooks.md) must grant issuance. See [Authorization](#authorization-authorized). |
 
 The `key` field is a standard JWK. The key type determines the pinned algorithm:
 
@@ -85,7 +85,7 @@ ayane provisioners --url https://ca.example.com
 
 A `jwks` provisioner validates tokens minted by an *external* issuer whose verification keys are published as a JSON Web Key Set. This is how you accept workload identities such as GitHub Actions, GitLab CI, or a cloud OIDC provider without distributing a private key. Keys are fetched over HTTPS and cached in-process; the correct key is chosen by the token header's `kid`, and the set is refetched on an unknown `kid` so key rotation is picked up without a restart.
 
-Because a public issuer does not mint tokens specifically for your CA, a `jwks` token only **authenticates** the caller. It defaults to `authorized: false`, so an [authorize webhook](webhooks.md) must **authorize** each request — and, since OIDC tokens carry no `sans` (and a `sub` like `repo:org/app:ref:refs/heads/main` is not a DNS name), the webhook is also where the certificate's real subject and SANs are set.
+Because a public issuer does not mint tokens specifically for your CA, a `jwks` token only **authenticates** the caller. It defaults to `authorized: false`, so an [authorize hook](hooks.md) must **authorize** each request — and, since OIDC tokens carry no `sans` (and a `sub` like `repo:org/app:ref:refs/heads/main` is not a DNS name), the hook is also where the certificate's real subject and SANs are set.
 
 ### Configuration
 
@@ -111,18 +111,18 @@ The verification source is nested under `jwks`:
 }
 ```
 
-A matching authorize webhook is mandatory; boot fails otherwise (see [Authorization](#authorization-authorized)).
+A matching authorize hook is mandatory; boot fails otherwise (see [Authorization](#authorization-authorized)).
 
 ## Authorization (`authorized`)
 
 Every provisioner carries an effective `authorized` flag: `true` for `jwk`, `false` for `jwks`, unless set explicitly. It changes what a validated token means:
 
-- **`authorized: true`** — the token both authenticates and authorizes. Webhooks still run and may *deny* (default-allow), but none is required. This is the historical `jwk` behavior.
-- **`authorized: false`** — the token only authenticates. Issuance is *default-deny*: an applicable [webhook](webhooks.md) must explicitly return `allow: true`, or the request is refused with `403 Forbidden`. The webhook typically also sets the subject/SANs. To prevent a provisioner that can never issue, boot fails if an unauthorized provisioner has no webhook whose `provisioners` list is empty (all) or contains its name.
+- **`authorized: true`** — the token both authenticates and authorizes. Hooks still run and may *deny* (default-allow), but none is required. This is the historical `jwk` behavior.
+- **`authorized: false`** — the token only authenticates. Issuance is *default-deny*: an applicable [hook](hooks.md) must explicitly return `allow: true`, or the request is refused with `403 Forbidden`. The hook typically also sets the subject/SANs. To prevent a provisioner that can never issue, boot fails if an unauthorized provisioner has no hook whose `provisioners` list is empty (all) or contains its name.
 
-A trusted internal issuer reached over `jwks` can opt back into full authorization with `"authorized": true` (no webhook required); conversely a `jwk` provisioner can be made webhook-gated with `"authorized": false`.
+A trusted internal issuer reached over `jwks` can opt back into full authorization with `"authorized": true` (no hook required); conversely a `jwk` provisioner can be made hook-gated with `"authorized": false`.
 
-For an unauthorized provisioner the token's `sans`/`sub` do **not** constrain the certificate (the [SAN subset policy](#san-subset-policy) is skipped) — the webhook is the sole authority on the issued identity.
+For an unauthorized provisioner the token's `sans`/`sub` do **not** constrain the certificate (the [SAN subset policy](#san-subset-policy) is skipped) — the hook is the sole authority on the issued identity.
 
 ## The one-time issuance token (OTT)
 
@@ -175,7 +175,7 @@ The OTT authorizes a *set of permitted SANs*; the CSR may request a subset of th
 - Every SAN actually requested in the CSR must be a member of the permitted set, or issuance is rejected with `403 Forbidden` (`SAN <name> is not permitted by the token`).
 - If the CSR requests no SANs, the certificate is issued with the full permitted set.
 
-In other words, a token with `sub: "host.example.com"` and no `sans` permits exactly one identity; to permit additional names the minter must enumerate them in `sans`. Webhooks may add further SANs after this check via enrichment — see [webhooks](webhooks.md).
+In other words, a token with `sub: "host.example.com"` and no `sans` permits exactly one identity; to permit additional names the minter must enumerate them in `sans`. Hooks may add further SANs after this check via enrichment — see [hooks](hooks.md).
 
 ### Optional CSR binding (cnf)
 
@@ -195,7 +195,7 @@ The CA does not trust the token header's `alg` field. For each provisioner it de
 
 ### One-time (replay) protection
 
-Each token's `jti` may be used only once. After all other checks pass — and only just before issuance commits — the CA atomically claims the `jti` in storage under the namespace `ott#<jti>`. A second presentation of the same token fails with `401 Unauthorized` (`token or proof has already been used`). Claiming late means a transient template or webhook failure never burns a still-valid token.
+Each token's `jti` may be used only once. After all other checks pass — and only just before issuance commits — the CA atomically claims the `jti` in storage under the namespace `ott#<jti>`. A second presentation of the same token fails with `401 Unauthorized` (`token or proof has already been used`). Claiming late means a transient template or hook failure never burns a still-valid token.
 
 The denylist record's expiry is floored to outlive the validator's acceptance window (`exp` plus the replay leeway), so a token cannot be replayed within its own validity even across the skew window. DPoP proofs (used by renew/rekey/self-revoke) live in a separate `dpop#<jti>` namespace, so the two anti-replay spaces never collide. With the DynamoDB backend these records carry a `ttl` attribute for automatic expiry — see [storage](storage.md).
 

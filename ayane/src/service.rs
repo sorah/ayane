@@ -1,5 +1,5 @@
 //! Request orchestration: the glue that turns an authenticated request into a
-//! certificate, applying SAN policy, webhooks, anti-replay and audit events.
+//! certificate, applying SAN policy, hooks, anti-replay and audit events.
 //!
 //! [`Service`] owns the live providers and exposes one method per HTTP
 //! operation. Each method returns wire types from [`ayane_protocol`]; the HTTP
@@ -15,7 +15,7 @@ pub struct Service {
     authorizer: std::sync::Arc<dyn crate::authorizer::Authorizer>,
     ca: std::sync::Arc<crate::ca::CertificateAuthority>,
     storage: std::sync::Arc<dyn crate::storage::Storage>,
-    webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
+    hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>,
     events: Vec<std::sync::Arc<dyn crate::event_sink::EventSink>>,
     templates: std::collections::HashMap<String, crate::template::CertificateTemplate>,
     default_template_name: Option<String>,
@@ -33,8 +33,8 @@ pub struct ServiceParts {
     pub ca: std::sync::Arc<crate::ca::CertificateAuthority>,
     /// Revocation/anti-replay store.
     pub storage: std::sync::Arc<dyn crate::storage::Storage>,
-    /// Issuance webhooks.
-    pub webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
+    /// Issuance hooks.
+    pub hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>,
     /// Audit sinks.
     pub events: Vec<std::sync::Arc<dyn crate::event_sink::EventSink>>,
     /// Named templates.
@@ -55,7 +55,7 @@ impl Service {
             authorizer: parts.authorizer,
             ca: parts.ca,
             storage: parts.storage,
-            webhooks: parts.webhooks,
+            hooks: parts.hooks,
             events: parts.events,
             templates: parts.templates,
             default_template_name: parts.default_template_name,
@@ -273,7 +273,7 @@ impl Service {
         // must be permitted by the token, and an empty request means the full
         // permitted set. An unauthorized provisioner's token does not constrain
         // the SANs (its `sub`/`sans` may not even be DNS names) — the authorize
-        // webhook is responsible for setting the certificate's subject and SANs.
+        // hook is responsible for setting the certificate's subject and SANs.
         let mut requested = csr.requested_sans()?;
         if authorized {
             let allowed = allowed_sans(claims);
@@ -297,8 +297,8 @@ impl Service {
             parse_rfc3339(&req.not_after)?,
         )?;
 
-        let context = crate::webhook::Context {
-            operation: crate::webhook::Operation::Sign,
+        let context = crate::hook::Context {
+            operation: crate::hook::Operation::Sign,
             authorized,
             provisioner: Some(&validated.provisioner),
             subject: &claims.sub,
@@ -308,8 +308,8 @@ impl Service {
             csr_der: Some(&csr.der),
             previous_certificate_der: None,
         };
-        let mut custom = crate::webhook::run(&self.webhooks, &context).await?;
-        // A webhook may adjust the validity window, but must not extend issuance
+        let mut custom = crate::hook::run(&self.hooks, &context).await?;
+        // A hook may adjust the validity window, but must not extend issuance
         // past the template's configured maximum lifetime; re-clamp notAfter to
         // the template ceiling before the collapse check.
         if let Some(ceiling) = template.max_not_after(custom.not_before)
@@ -324,7 +324,7 @@ impl Service {
         }
 
         // Claim the one-time token only after every check has passed and
-        // issuance is about to commit, so a transient webhook/template failure
+        // issuance is about to commit, so a transient hook/template failure
         // never burns a still-valid token. The TTL covers the validator leeway.
         self.claim_jti(
             "ott",
@@ -490,7 +490,7 @@ impl Service {
         };
 
         // Baseline identity and validity are taken from the previous certificate
-        // (same effective lifetime, preserved extensions); a webhook may then
+        // (same effective lifetime, preserved extensions); a hook may then
         // customize them, or deny, before reissue.
         let baseline_subject =
             subject_common_name(&cert.tbs_certificate.subject).unwrap_or_default();
@@ -506,16 +506,16 @@ impl Service {
             use der::Encode;
             cert.to_der()?
         };
-        let context = crate::webhook::Context {
+        let context = crate::hook::Context {
             operation: if is_rekey {
-                crate::webhook::Operation::Rekey
+                crate::hook::Operation::Rekey
             } else {
-                crate::webhook::Operation::Renew
+                crate::hook::Operation::Renew
             },
             // Reissuance proves possession of the existing key via DPoP, so it is
             // inherently authorized (default-allow).
             authorized: true,
-            // Reissuance is not tied to a provisioner, so only webhooks that
+            // Reissuance is not tied to a provisioner, so only hooks that
             // apply to all provisioners are consulted here.
             provisioner: None,
             subject: &baseline_subject,
@@ -525,8 +525,8 @@ impl Service {
             csr_der: new_csr_der.as_deref(),
             previous_certificate_der: Some(&previous_certificate_der),
         };
-        let mut custom = crate::webhook::run(&self.webhooks, &context).await?;
-        // A reissue preserves the previous certificate's lifetime: a webhook may
+        let mut custom = crate::hook::run(&self.hooks, &context).await?;
+        // A reissue preserves the previous certificate's lifetime: a hook may
         // shorten it but must not extend issuance beyond the baseline window
         // (there is no template to re-clamp against on reissue).
         if custom.not_after > not_after {
@@ -539,7 +539,7 @@ impl Service {
         }
 
         // Claim the DPoP proof's jti only once issuance is about to commit, so a
-        // webhook denial never burns an otherwise-valid proof.
+        // hook denial never burns an otherwise-valid proof.
         let proof_exp = proof.issued_at + self.dpop_max_age + REPLAY_LEEWAY;
         self.claim_jti("dpop", &proof.jti, proof_exp).await?;
 

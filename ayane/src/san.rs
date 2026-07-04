@@ -6,7 +6,7 @@
 
 /// A single Subject Alternative Name.
 ///
-/// In webhook payloads this serializes as an adjacently tagged enum
+/// In hook payloads this serializes as an adjacently tagged enum
 /// (`{"type": "dns", "value": "example.com"}`), so the SAN kind is explicit
 /// rather than re-derived from the string by [`San::parse`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

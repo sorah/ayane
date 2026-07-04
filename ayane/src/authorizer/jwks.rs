@@ -8,7 +8,7 @@
 //! picked up without a restart).
 //!
 //! Such tokens only *authenticate* the caller; a `jwks` provisioner defaults to
-//! `authorized = false`, so an authorize webhook must grant each request. As
+//! `authorized = false`, so an authorize hook must grant each request. As
 //! with `jwk`, the accepted algorithm is pinned to the key type by
 //! [`crate::authorizer::validate_signed`].
 

@@ -126,7 +126,7 @@ pub struct ProvisionerInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audiences: Vec<String>,
     /// Whether a validated token alone authorizes issuance. When `false`, an
-    /// authorize webhook must explicitly grant each request.
+    /// authorize hook must explicitly grant each request.
     #[serde(default = "default_true")]
     pub authorized: bool,
 }

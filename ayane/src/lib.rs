@@ -5,7 +5,7 @@
 //!
 //! - [`key_provider`] — where the CA private key lives and signs (file, AWS KMS)
 //! - [`authorizer`] — how an issuance request is authenticated (JWT one-time token)
-//! - [`webhook`] — external gates/enrichment for issuance (HTTP, AWS Lambda)
+//! - [`hook`] — external gates/enrichment for issuance (HTTP, AWS Lambda)
 //! - [`event_sink`] — where audit events are emitted (stdout, file, AWS EventBridge)
 //! - [`storage`] — revocation records and anti-replay state (SQLite, DynamoDB)
 //!
@@ -32,7 +32,7 @@ pub mod service;
 pub mod storage;
 pub mod template;
 pub mod tls;
-pub mod webhook;
+pub mod hook;
 pub mod x509;
 
 #[cfg(test)]

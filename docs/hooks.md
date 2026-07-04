@@ -1,28 +1,28 @@
-# Issuance webhooks
+# Issuance hooks
 
-Issuance webhooks let an external service gate and/or customize certificate issuance. Before ayane signs (or reissues) a certificate it can call out to one or more webhooks, each of which replies with a single typed response that may **deny** the request and/or **customize** the certificate (subject, SANs, validity, key usages, or arbitrary extensions). There is no separate "authorizing" vs "enriching" kind — one response does both. Webhooks are configured under the top-level `webhooks` key and are invoked over HTTPS (optionally HMAC-signed) or a synchronous AWS Lambda invocation.
+Issuance hooks let an external service gate and/or customize certificate issuance. Before ayane signs (or reissues) a certificate it can call out to one or more hooks, each of which replies with a single typed response that may **deny** the request and/or **customize** the certificate (subject, SANs, validity, key usages, or arbitrary extensions). There is no separate "authorizing" vs "enriching" kind — one response does both. Hooks are configured under the top-level `hooks` key and are invoked over HTTPS (optionally HMAC-signed) or a synchronous AWS Lambda invocation.
 
-Webhooks run for the `sign`, `renew`, and `rekey` operations. The `operation` field in the request body tells the webhook which one is in progress. For `renew`/`rekey` the request is not tied to a provisioner, so only webhooks that apply to all provisioners (an empty `provisioners` filter) are consulted.
+Hooks run for the `sign`, `renew`, and `rekey` operations. The `operation` field in the request body tells the hook which one is in progress. For `renew`/`rekey` the request is not tied to a provisioner, so only hooks that apply to all provisioners (an empty `provisioners` filter) are consulted.
 
 ## Configuration
 
-Webhooks are listed under `webhooks` in the [configuration](configuration.md) file. Each entry is a `WebhookConfig`:
+Hooks are listed under `hooks` in the [configuration](configuration.md) file. Each entry is a `HookConfig`:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `name` | string | yes | — | Unique webhook name; appears in denial errors and logs |
+| `name` | string | yes | — | Unique hook name; appears in denial errors and logs |
 | `target` | object | yes | — | Transport, tagged by `type` (see below) |
-| `provisioners` | array of string | no | `[]` (all) | Provisioner names this webhook applies to; empty means every provisioner |
+| `provisioners` | array of string | no | `[]` (all) | Provisioner names this hook applies to; empty means every provisioner |
 | `timeout` | duration string | no | none | Per-call timeout (e.g. `"5s"`). HTTP only; bounds each request |
 
 The configuration struct rejects unknown fields (`deny_unknown_fields`), so a typo in a key fails startup rather than being silently ignored.
 
 ### Provisioner filtering
 
-`provisioners` selects which token-issued requests trigger the webhook. The matching rule (`applies_to`) is:
+`provisioners` selects which token-issued requests trigger the hook. The matching rule (`applies_to`) is:
 
-- Empty list — the webhook applies to **all** requests.
-- Non-empty list — the webhook applies only when the request's provisioner name is in the list. A request with no provisioner (`None`) does **not** match a non-empty filter. Because `renew`/`rekey` carry no provisioner, a non-empty filter excludes them.
+- Empty list — the hook applies to **all** requests.
+- Non-empty list — the hook applies only when the request's provisioner name is in the list. A request with no provisioner (`None`) does **not** match a non-empty filter. Because `renew`/`rekey` carry no provisioner, a non-empty filter excludes them.
 
 ### `target` — HTTP
 
@@ -64,7 +64,7 @@ The request JSON is the Lambda invocation payload, and the function's returned p
 
 ```json
 {
-  "webhooks": [
+  "hooks": [
     {
       "name": "policy-gate",
       "provisioners": ["ci-issuer"],
@@ -87,11 +87,11 @@ The request JSON is the Lambda invocation payload, and the function's returned p
 }
 ```
 
-Webhooks run in configuration order. Each applicable webhook receives the **original** request (it does not observe an earlier webhook's customization); their responses are layered in order onto the pending certificate. Any webhook may deny, and the first denial short-circuits the chain. When multiple webhooks set the same scalar field (subject, validity, key usages) the last one wins; `additional_sans` and `additional_extensions` accumulate across all of them.
+Hooks run in configuration order. Each applicable hook receives the **original** request (it does not observe an earlier hook's customization); their responses are layered in order onto the pending certificate. Any hook may deny, and the first denial short-circuits the chain. When multiple hooks set the same scalar field (subject, validity, key usages) the last one wins; `additional_sans` and `additional_extensions` accumulate across all of them.
 
 ## Request body
 
-ayane POSTs the same JSON document to every webhook (HTTP body or Lambda payload). It describes the certificate that is about to be issued, after the provisioner token (for `sign`) or the previous certificate (for `renew`/`rekey`) and the certificate template have been applied, but before any webhook customization. Field names are snake_case.
+ayane POSTs the same JSON document to every hook (HTTP body or Lambda payload). It describes the certificate that is about to be issued, after the provisioner token (for `sign`) or the previous certificate (for `renew`/`rekey`) and the certificate template have been applied, but before any hook customization. Field names are snake_case.
 
 | Field | Type | Always present | Description |
 | --- | --- | --- | --- |
@@ -138,7 +138,7 @@ Authorization: Bearer <bearer_token>
 
 ## Response body
 
-The webhook replies with a single JSON object. Every field is optional; an absent field leaves the corresponding certificate property at its pre-webhook (baseline) value. Field names are snake_case (matching the request body).
+The hook replies with a single JSON object. Every field is optional; an absent field leaves the corresponding certificate property at its pre-hook (baseline) value. Field names are snake_case (matching the request body).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -159,17 +159,17 @@ Each `additional_extensions` entry is `{ "oid": "1.2.3.4", "value": "<standard-b
 
 The default direction depends on the provisioner's [`authorized`](provisioners.md#authorization-authorized) flag:
 
-- **Authorized provisioner (default-allow)** — the common case (`jwk`). A request is denied only when a webhook returns `allow` exactly `false`. A reply of `{"allow": true}`, `{}`, or one where `allow` is missing **permits** it. No webhook is required.
-- **Unauthorized provisioner (default-deny)** — a provisioner with `authorized: false` (the default for `jwks`). The token only authenticates; issuance is refused **unless** an applicable webhook returns `allow` exactly `true`. A silent reply (`{}` / `allow` absent) is *not* enough, and if no webhook applies at all the request is denied. This is where the webhook grants access and typically also sets the certificate's `subject_common_name`/`sans`.
+- **Authorized provisioner (default-allow)** — the common case (`jwk`). A request is denied only when a hook returns `allow` exactly `false`. A reply of `{"allow": true}`, `{}`, or one where `allow` is missing **permits** it. No hook is required.
+- **Unauthorized provisioner (default-deny)** — a provisioner with `authorized: false` (the default for `jwks`). The token only authenticates; issuance is refused **unless** an applicable hook returns `allow` exactly `true`. A silent reply (`{}` / `allow` absent) is *not* enough, and if no hook applies at all the request is denied. This is where the hook grants access and typically also sets the certificate's `subject_common_name`/`sans`.
 
-In both directions an explicit `allow: false` denies immediately and short-circuits the chain. A denial returns `403 Forbidden`; the detail is `deny_reason` when provided, otherwise `issuance denied by webhook "<name>"` (or `issuance was not authorized by any webhook` when an unauthorized request received no explicit grant).
+In both directions an explicit `allow: false` denies immediately and short-circuits the chain. A denial returns `403 Forbidden`; the detail is `deny_reason` when provided, otherwise `issuance denied by hook "<name>"` (or `issuance was not authorized by any hook` when an unauthorized request received no explicit grant).
 
 ### Validity semantics
 
-A webhook may override `notBefore`/`notAfter`, but the result is re-clamped before issuance so a webhook can never extend issuance past policy:
+A hook may override `notBefore`/`notAfter`, but the result is re-clamped before issuance so a hook can never extend issuance past policy:
 
-- On `sign`, `notAfter` is bounded by the resolved template's `max_validity` (plus the skew backdate). A webhook may move `notAfter` earlier, or later **up to** the template maximum — never beyond it.
-- On `renew`/`rekey`, there is no template to clamp against, so `notAfter` may not exceed the previous certificate's lifetime (the baseline window). A webhook may only shorten it.
+- On `sign`, `notAfter` is bounded by the resolved template's `max_validity` (plus the skew backdate). A hook may move `notAfter` earlier, or later **up to** the template maximum — never beyond it.
+- On `renew`/`rekey`, there is no template to clamp against, so `notAfter` may not exceed the previous certificate's lifetime (the baseline window). A hook may only shorten it.
 
 A malformed `notAfter` that fails RFC 3339 parsing is rejected as a bad request. After re-clamping, if the validity window has collapsed (`notAfter <= notBefore`), issuance fails with `403 Forbidden` and the detail `certificate validity window collapsed`.
 
@@ -185,16 +185,16 @@ Example reply that adds a SAN and shortens the lifetime:
 
 ## Fail-closed behavior
 
-Webhooks run before the one-time issuance token (or DPoP proof) is consumed and before the certificate is signed, so a webhook failure aborts issuance cleanly without burning the credential. Failures fail closed:
+Hooks run before the one-time issuance token (or DPoP proof) is consumed and before the certificate is signed, so a hook failure aborts issuance cleanly without burning the credential. Failures fail closed:
 
 - **Denial**: a reply with `allow: false` denies the request (`403 Forbidden`).
 - **Transport failure**: a non-2xx HTTP status, a request/connection error, a timeout, a Lambda `FunctionError` or non-2xx status code, an empty Lambda payload, or a response that cannot be decoded all propagate as an error and abort issuance. For these internal/transport failures the surface error is `500`-class; only an explicit `allow: false` yields `403`.
 
-Because responses are applied in order and any webhook may deny, the first failure short-circuits the chain. No partial certificate is ever issued.
+Because responses are applied in order and any hook may deny, the first failure short-circuits the chain. No partial certificate is ever issued.
 
-## Worked example: HTTP webhook with HMAC verification
+## Worked example: HTTP hook with HMAC verification
 
-Configure the webhook with a base64-encoded key:
+Configure the hook with a base64-encoded key:
 
 ```bash
 # Generate a key and base64-encode it for the config "secret" field.
@@ -212,7 +212,7 @@ require "json"
 require "base64"
 
 # The same value placed in target.secret, base64-decoded back to raw bytes.
-HMAC_KEY = Base64.strict_decode64(ENV.fetch("AYANE_WEBHOOK_SECRET_B64"))
+HMAC_KEY = Base64.strict_decode64(ENV.fetch("AYANE_HOOK_SECRET_B64"))
 
 post "/ayane" do
   body = request.body.read
@@ -232,7 +232,7 @@ end
 Run it and point the config `url` at it:
 
 ```bash
-AYANE_WEBHOOK_SECRET_B64="c2VjcmV0LWhtYWMta2V5" ruby receiver.rb
+AYANE_HOOK_SECRET_B64="c2VjcmV0LWhtYWMta2V5" ruby receiver.rb
 ```
 
 To verify the signature on the command line against a captured body:
@@ -244,7 +244,7 @@ echo -n "c2VjcmV0LWhtYWMta2V5" | base64 -d > /tmp/hmac.key
 openssl dgst -sha256 -mac HMAC -macopt hexkey:"$(xxd -p -c256 /tmp/hmac.key)" body.json
 ```
 
-## Worked example: Lambda customizing webhook
+## Worked example: Lambda customizing hook
 
 A Lambda function receives the request JSON as its event payload and returns the reply payload. This example adds a SAN and clamps the lifetime to at most one hour from issuance:
 

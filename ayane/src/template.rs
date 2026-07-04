@@ -135,7 +135,7 @@ impl ExtKeyUsageName {
     }
 }
 
-/// Webhook-supplied overrides layered onto a template's extensions.
+/// Hook-supplied overrides layered onto a template's extensions.
 #[derive(Default)]
 pub struct ExtensionOverrides<'a> {
     /// Replace the template's `keyUsage` set when present.
@@ -232,8 +232,8 @@ impl CertificateTemplate {
     /// The latest permissible `notAfter` for a window starting at `not_before`,
     /// i.e. `not_before + max_validity` (plus the skew backdate).
     ///
-    /// Used to re-clamp a webhook-adjusted validity window so issuance can never
-    /// exceed the template's configured maximum lifetime, even when a webhook
+    /// Used to re-clamp a hook-adjusted validity window so issuance can never
+    /// exceed the template's configured maximum lifetime, even when a hook
     /// overrides `notAfter`. Returns `None` only on arithmetic overflow.
     pub fn max_not_after(
         &self,
@@ -300,7 +300,7 @@ pub(crate) fn subject_alt_name_extension(
 }
 
 /// (Re)compute and append the subject and authority key identifiers, replacing
-/// any already present so they can never be overridden by template or webhook
+/// any already present so they can never be overridden by template or hook
 /// input.
 pub(crate) fn finalize_key_identifiers(
     exts: &mut Vec<x509_cert::ext::Extension>,

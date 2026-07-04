@@ -19,7 +19,7 @@ pub enum Error {
     #[error("unauthorized: {0}")]
     Unauthorized(String),
 
-    /// The request was authenticated but not permitted (policy, webhook deny,
+    /// The request was authenticated but not permitted (policy, hook deny,
     /// SAN not allowed, certificate revoked).
     #[error("forbidden: {0}")]
     Forbidden(String),

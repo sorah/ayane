@@ -9,7 +9,7 @@ It supports multiple cloud environments, such as on AWS (KMS, Lambda, Function U
 - **JWT one-time tokens** — issuance is gated by an OTT signed by a configured provisioner. The JWT algorithm is pinned to the provisioner's key type (alg-confusion-safe), and each `jti` is single-use.
 - **DPoP self-service lifecycle** — renew, rekey, and self-revoke are authenticated by an RFC 9449 proof verified directly against the presented certificate's public key.
 - **Pluggable, AWS-native backends** — CA key in a file or AWS KMS; audit events to stdout, a file, or Amazon EventBridge; revocation and anti-replay state in SQLite or Amazon DynamoDB.
-- **Issuance webhooks** — gate and/or customize certificates from an external HTTP or AWS Lambda service via a single typed response.
+- **Issuance hooks** — gate and/or customize certificates from an external HTTP or AWS Lambda service via a single typed response.
 - **Certificate templates** — declarative key usage, extended key usage, CA/path-length constraints, and validity policy.
 
 ## Quick start
@@ -72,7 +72,7 @@ Full documentation lives in [`docs/`](docs/README.md):
 - [Provisioners and tokens](docs/provisioners.md) — JWK provisioners and the OTT claim set.
 - [DPoP and the certificate lifecycle](docs/renewal-revocation.md) — renew, rekey, and self-revoke.
 - [Certificate templates](docs/templates.md) — key usage, EKU, CA constraints, validity policy.
-- [Webhooks](docs/webhooks.md) · [Audit events](docs/events.md) · [Storage](docs/storage.md)
+- [Hooks](docs/hooks.md) · [Audit events](docs/events.md) · [Storage](docs/storage.md)
 - [Deployment](docs/deployment.md) — standalone or AWS Lambda Function URL.
 - [Security model](docs/security.md) — trust boundaries, alg pinning, anti-replay, DPoP binding.
 - [CLI reference](docs/cli.md) — the `ayane` client commands.

@@ -117,7 +117,7 @@ The validity window is computed from the request and the template's `backdate`, 
 
 The `backdate` is added to both the default and the maximum, so a template with `default_validity: "24h"`, `max_validity: "24h"`, and `backdate: "60s"` produces a certificate that is genuinely valid for 24 hours of *future* time after accounting for the 60-second backdate.
 
-[Webhooks](webhooks.md) may adjust the lifetime: a webhook response can return a `notAfter` that shortens or, on `sign`, extends the window. The template's clamp is applied first, and the webhook's `notAfter` is then re-clamped to `max_validity + backdate`, so a webhook can move `notAfter` anywhere up to that ceiling but never beyond it.
+[Hooks](hooks.md) may adjust the lifetime: a hook response can return a `notAfter` that shortens or, on `sign`, extends the window. The template's clamp is applied first, and the hook's `notAfter` is then re-clamped to `max_validity + backdate`, so a hook can move `notAfter` anywhere up to that ceiling but never beyond it.
 
 ## Examples
 
@@ -176,5 +176,5 @@ To issue a certificate with no subject `commonName` — relying solely on SANs �
 
 - [Configuration](configuration.md) — the full JSON schema, including the `templates` map and `default_template`.
 - [Provisioners](provisioners.md) — how a provisioner's `template` field selects a template per issuer.
-- [Webhooks](webhooks.md) — webhooks that add SANs or adjust `notAfter`.
+- [Hooks](hooks.md) — hooks that add SANs or adjust `notAfter`.
 - [docs index](README.md)

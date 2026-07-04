@@ -285,7 +285,7 @@ You now have a running CA that issues, renews, and revokes certificates through 
 
 - Swap the local PEM key for AWS KMS and the in-memory store for DynamoDB — [configuration](configuration.md), [storage](storage.md).
 - Shape issued certificates with templates (validity windows, key usages, CA certificates) — [templates](templates.md).
-- Gate or enrich issuance with webhooks and stream audit events — [webhooks](webhooks.md), [events](events.md).
+- Gate or enrich issuance with hooks and stream audit events — [hooks](hooks.md), [events](events.md).
 - Deploy behind a reverse proxy or as a Lambda Function URL — [deployment](deployment.md).
 
 ## See also

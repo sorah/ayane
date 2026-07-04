@@ -1,7 +1,7 @@
 //! End-to-end sign flow for a `jwks` (OIDC) provisioner, driven by a loopback
 //! OpenID Connect discovery + JWKS server. Exercises OIDC-shaped tokens (URL
 //! `iss`, non-DNS `sub`, no `sans`, no `jti`) which only authenticate: issuance
-//! must be granted by an authorize webhook, which also sets the real subject and
+//! must be granted by an authorize hook, which also sets the real subject and
 //! SANs.
 
 use super::*;
@@ -9,11 +9,11 @@ use super::*;
 const OIDC_AUDIENCE: &str = "ayane-ca";
 const KID: &str = "test-key-1";
 
-/// A webhook that returns a fixed response, standing in for an authorize policy.
-struct FixedWebhook(crate::webhook::WebhookResponse);
+/// A hook that returns a fixed response, standing in for an authorize policy.
+struct FixedHook(crate::hook::HookResponse);
 
 #[async_trait::async_trait]
-impl crate::webhook::WebhookProvider for FixedWebhook {
+impl crate::hook::HookProvider for FixedHook {
     fn name(&self) -> &str {
         "authorize"
     }
@@ -22,8 +22,8 @@ impl crate::webhook::WebhookProvider for FixedWebhook {
     }
     async fn call(
         &self,
-        _request: &crate::webhook::WebhookRequest,
-    ) -> crate::error::Result<crate::webhook::WebhookResponse> {
+        _request: &crate::hook::HookRequest,
+    ) -> crate::error::Result<crate::hook::HookResponse> {
         Ok(self.0.clone())
     }
 }
@@ -93,7 +93,7 @@ fn oidc_token(secret: &p256::SecretKey, issuer: &str, subject: &str) -> String {
 
 async fn setup(
     issuer_base: &str,
-    webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
+    hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>,
 ) -> (
     crate::service::Service,
     std::sync::Arc<dyn crate::storage::Storage>,
@@ -134,7 +134,7 @@ async fn setup(
         authorizer,
         ca: authority,
         storage: storage.clone(),
-        webhooks,
+        hooks,
         events: Vec::new(),
         templates: std::collections::HashMap::new(),
         default_template_name: None,
@@ -147,7 +147,7 @@ async fn setup(
 fn sign_request(leaf: &p256::SecretKey, token: String) -> ayane_protocol::SignRequest {
     ayane_protocol::SignRequest {
         // The CSR subject/SANs are unconstrained for an unauthorized provisioner;
-        // the webhook decides the real identity.
+        // the hook decides the real identity.
         csr: make_csr(leaf, "app.example.com", &["app.example.com"]),
         token,
         not_before: None,
@@ -156,12 +156,12 @@ fn sign_request(leaf: &p256::SecretKey, token: String) -> ayane_protocol::SignRe
 }
 
 #[tokio::test]
-async fn oidc_token_denied_without_authorize_webhook() {
+async fn oidc_token_denied_without_authorize_hook() {
     let provisioner_secret = p256::SecretKey::random(&mut rand::rngs::OsRng);
     let base = start_oidc_server(oidc_jwk_json(&provisioner_secret)).await;
-    // A silent webhook authenticates but does not authorize.
-    let webhook = std::sync::Arc::new(FixedWebhook(crate::webhook::WebhookResponse::default()));
-    let (service, _storage) = setup(&base, vec![webhook]).await;
+    // A silent hook authenticates but does not authorize.
+    let hook = std::sync::Arc::new(FixedHook(crate::hook::HookResponse::default()));
+    let (service, _storage) = setup(&base, vec![hook]).await;
 
     let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
     let token = oidc_token(
@@ -176,18 +176,18 @@ async fn oidc_token_denied_without_authorize_webhook() {
 }
 
 #[tokio::test]
-async fn oidc_token_issues_when_webhook_authorizes() {
+async fn oidc_token_issues_when_hook_authorizes() {
     let provisioner_secret = p256::SecretKey::random(&mut rand::rngs::OsRng);
     let base = start_oidc_server(oidc_jwk_json(&provisioner_secret)).await;
-    // The authorize webhook grants the request and maps the OIDC identity onto a
+    // The authorize hook grants the request and maps the OIDC identity onto a
     // real certificate subject and SAN.
-    let webhook = std::sync::Arc::new(FixedWebhook(crate::webhook::WebhookResponse {
+    let hook = std::sync::Arc::new(FixedHook(crate::hook::HookResponse {
         allow: Some(true),
         subject_common_name: Some("app.example.com".to_string()),
         sans: Some(vec![crate::san::San::parse("app.example.com")]),
         ..Default::default()
     }));
-    let (service, storage) = setup(&base, vec![webhook]).await;
+    let (service, storage) = setup(&base, vec![hook]).await;
 
     let leaf = p256::SecretKey::random(&mut rand::rngs::OsRng);
     let token = oidc_token(
@@ -198,12 +198,12 @@ async fn oidc_token_issues_when_webhook_authorizes() {
     let issued = service
         .sign(sign_request(&leaf, token), SIGN_URL, None)
         .await
-        .expect("issues once the webhook authorizes");
+        .expect("issues once the hook authorizes");
 
     let cert = crate::x509::certificate_from_pem(&issued.certificate).unwrap();
     assert!(
         cert_san_strings(&cert).contains(&"app.example.com".to_string()),
-        "webhook-supplied SAN is present on the issued certificate"
+        "hook-supplied SAN is present on the issued certificate"
     );
     let record = storage
         .get_certificate(&issued.serial_number)

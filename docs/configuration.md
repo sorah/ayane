@@ -12,7 +12,7 @@ The document is parsed by [`Config::from_json`](../ayane/src/config.rs) and turn
   "provisioners": [],
   "templates": {},
   "default_template": null,
-  "webhooks": [],
+  "hooks": [],
   "events": [],
   "storage": { "type": "sqlite", "path": ":memory:" },
   "server": { "listen": "0.0.0.0:9443" }
@@ -25,7 +25,7 @@ The document is parsed by [`Config::from_json`](../ayane/src/config.rs) and turn
 | `provisioners` | array of [ProvisionerConfig](#provisioners) | default `[]` | Token-issuing provisioners. With none configured, no token can be validated and `/v1/sign` cannot succeed. |
 | `templates` | object map `name` -> [CertificateTemplate](#templates) | default `{}` | Named certificate templates. |
 | `default_template` | string | default `null` | Name of the template applied when a provisioner does not select one. Validated at boot. |
-| `webhooks` | array of [WebhookConfig](#webhooks) | default `[]` | Issuance webhooks that gate and/or customize certificates. |
+| `hooks` | array of [HookConfig](#hooks) | default `[]` | Issuance hooks that gate and/or customize certificates. |
 | `events` | array of [EventConfig](#events) | default `[]` | Audit-event destinations. |
 | `storage` | object ([StorageConfig](#storage)) | default `{"type":"sqlite","path":":memory:"}` | Issued-certificate inventory, revocation, and anti-replay storage backend. |
 | `server` | object ([ServerConfig](#server)) | default (see [server](#server)) | HTTP server settings. |
@@ -41,7 +41,7 @@ A minimal valid document only needs `ca`; every other key defaults:
 }
 ```
 
-This starts with no provisioners, in-process SQLite storage, no events or webhooks, and listens on `0.0.0.0:9443`.
+This starts with no provisioners, in-process SQLite storage, no events or hooks, and listens on `0.0.0.0:9443`.
 
 ## PemSource
 
@@ -175,7 +175,7 @@ Common fields:
 | `type` | string | required | Provisioner kind: `"jwk"` or `"jwks"`. |
 | `audiences` | array of string | default `[]` | Accepted token `aud` values. When empty, `aud` must equal the request endpoint URL; a non-empty list becomes a fixed allowlist. Required (non-empty) for `jwks`. |
 | `template` | string | default `null` | Name of the [template](#templates) used for certificates issued through this provisioner. Validated at boot. |
-| `authorized` | bool | default by kind (`jwk`→`true`, `jwks`→`false`) | When `false`, a validated token only *authenticates*; issuance must be granted by an authorize [webhook](webhooks.md). Boot fails if no applicable webhook exists. |
+| `authorized` | bool | default by kind (`jwk`→`true`, `jwks`→`false`) | When `false`, a validated token only *authenticates*; issuance must be granted by an authorize [hook](hooks.md). Boot fails if no applicable hook exists. |
 
 Type `jwk` — a single static verification key:
 
@@ -317,20 +317,20 @@ referenced template "server" is not defined under `templates`
 
 This fails fast at boot rather than returning a `500` at issuance time. (The fallback used when no template is named is a built-in default and is never looked up by name, so leaving `default_template` unset is valid.)
 
-## webhooks
+## hooks
 
-Webhooks let an external service gate and/or customize issuance for `sign`, `renew`, and `rekey`. A single typed response can both deny the request and customize the certificate — there is no `kind` distinction. The config struct has `deny_unknown_fields`. See [webhooks](webhooks.md) for the request/response payloads and signing.
+Hooks let an external service gate and/or customize issuance for `sign`, `renew`, and `rekey`. A single typed response can both deny the request and customize the certificate — there is no `kind` distinction. The config struct has `deny_unknown_fields`. See [hooks](hooks.md) for the request/response payloads and signing.
 
 | Field | Type | Required / default | Description |
 | --- | --- | --- | --- |
-| `name` | string | required | Unique webhook name. |
-| `target` | object ([WebhookTarget](#webhooktarget)) | required | Where the webhook is invoked. |
-| `provisioners` | array of string | default `[]` | Provisioner names this webhook applies to. Empty means all provisioners. |
+| `name` | string | required | Unique hook name. |
+| `target` | object ([HookTarget](#hooktarget)) | required | Where the hook is invoked. |
+| `provisioners` | array of string | default `[]` | Provisioner names this hook applies to. Empty means all provisioners. |
 | `timeout` | [duration](#durations) | default `null` | Per-call timeout. |
 
-The webhook reply is a single typed response: `allow: false` denies issuance (`403`), while a non-2xx status, a Lambda error, or a transport failure fails closed (`500`-class). Any other reply permits the request and may customize the certificate (subject, SANs, validity, key usages, extensions). See [webhooks](webhooks.md) for the full response schema.
+The hook reply is a single typed response: `allow: false` denies issuance (`403`), while a non-2xx status, a Lambda error, or a transport failure fails closed (`500`-class). Any other reply permits the request and may customize the certificate (subject, SANs, validity, key usages, extensions). See [hooks](hooks.md) for the full response schema.
 
-### WebhookTarget
+### HookTarget
 
 An internally tagged enum keyed on `type`: `"http"` or `"lambda"`.
 
@@ -476,11 +476,11 @@ The subject `commonName` is the first DNS SAN. Note that with the default `liste
 
 ## Full example
 
-A complete configuration combining a KMS-backed CA, a JWK provisioner, templates, both webhook kinds, two event sinks, DynamoDB storage, and an external URL is shipped at [`examples/ayane.example.json`](../examples/ayane.example.json).
+A complete configuration combining a KMS-backed CA, a JWK provisioner, templates, both hook kinds, two event sinks, DynamoDB storage, and an external URL is shipped at [`examples/ayane.example.json`](../examples/ayane.example.json).
 
 ## See also
 
 - [Authentication: tokens and DPoP](provisioners.md)
-- [Webhooks](webhooks.md)
+- [Hooks](hooks.md)
 - [Deployment](deployment.md)
 - [docs index](README.md)

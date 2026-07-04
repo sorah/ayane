@@ -1,22 +1,22 @@
-//! Issuance webhooks: external services that gate and/or augment certificate
+//! Issuance hooks: external services that gate and/or augment certificate
 //! issuance, renewal and rekey.
 //!
-//! A single webhook receives a typed description of the pending certificate and
-//! replies with one typed [`WebhookResponse`]: it may deny the request
+//! A single hook receives a typed description of the pending certificate and
+//! replies with one typed [`HookResponse`]: it may deny the request
 //! (`allow = false`) and/or customize the certificate (subject, SANs, validity,
 //! key usages, or arbitrary extensions) from the same response — there is no
 //! authorizing/enriching distinction. Transport is either HTTPS (optionally
 //! HMAC-signed) or a synchronous AWS Lambda invocation.
 //!
-//! Each applicable webhook is invoked with the *original* request (it does not
-//! observe an earlier webhook's customization); their responses are layered onto
+//! Each applicable hook is invoked with the *original* request (it does not
+//! observe an earlier hook's customization); their responses are layered onto
 //! a [`Customization`] in configuration order, which the caller then turns into
 //! the issued certificate.
 
 pub mod http;
 pub mod lambda;
 
-/// The operation a webhook is being consulted for.
+/// The operation a hook is being consulted for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
@@ -38,10 +38,10 @@ impl std::fmt::Display for Operation {
     }
 }
 
-/// The typed payload sent to a webhook. Serialized as the HTTP/Lambda body.
+/// The typed payload sent to a hook. Serialized as the HTTP/Lambda body.
 #[serde_with::serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WebhookRequest {
+pub struct HookRequest {
     /// Timestamp of the call.
     pub timestamp: chrono::DateTime<chrono::Utc>,
     /// The operation being performed.
@@ -72,7 +72,7 @@ pub struct WebhookRequest {
     pub not_after: chrono::DateTime<chrono::Utc>,
 }
 
-/// An arbitrary X.509 extension supplied by a webhook.
+/// An arbitrary X.509 extension supplied by a hook.
 #[serde_with::serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawExtension {
@@ -96,7 +96,7 @@ impl RawExtension {
             .parse::<const_oid::ObjectIdentifier>()
             .map_err(|e| {
                 crate::error::Error::BadRequest(format!(
-                    "webhook extension OID {:?}: {e}",
+                    "hook extension OID {:?}: {e}",
                     self.oid
                 ))
             })?;
@@ -104,18 +104,18 @@ impl RawExtension {
             extn_id,
             critical: self.critical,
             extn_value: der::asn1::OctetString::new(self.value.clone()).map_err(|e| {
-                crate::error::Error::Internal(format!("webhook extension value: {e}"))
+                crate::error::Error::Internal(format!("hook extension value: {e}"))
             })?,
         })
     }
 }
 
-/// A webhook's typed reply. Every field is optional: an absent field leaves the
-/// corresponding certificate property at its pre-webhook value.
+/// A hook's typed reply. Every field is optional: an absent field leaves the
+/// corresponding certificate property at its pre-hook value.
 #[serde_with::serde_as]
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-pub struct WebhookResponse {
+pub struct HookResponse {
     /// `Some(false)` denies the request; `Some(true)`/`None` permit it.
     pub allow: Option<bool>,
     /// Human-readable denial reason, surfaced when `allow` is `false`.
@@ -138,60 +138,60 @@ pub struct WebhookResponse {
     pub additional_extensions: Vec<RawExtension>,
 }
 
-/// An invokable webhook.
+/// An invokable hook.
 #[async_trait::async_trait]
-pub trait WebhookProvider: Send + Sync {
-    /// Webhook name.
+pub trait HookProvider: Send + Sync {
+    /// Hook name.
     fn name(&self) -> &str;
 
-    /// Whether this webhook applies to the named provisioner.
+    /// Whether this hook applies to the named provisioner.
     fn applies_to(&self, provisioner: Option<&str>) -> bool;
 
-    /// Invoke the webhook.
-    async fn call(&self, request: &WebhookRequest) -> crate::error::Result<WebhookResponse>;
+    /// Invoke the hook.
+    async fn call(&self, request: &HookRequest) -> crate::error::Result<HookResponse>;
 }
 
-/// Build one configured webhook. Lambda webhooks resolve their client from the
+/// Build one configured hook. Lambda hooks resolve their client from the
 /// shared AWS configuration, loaded lazily on first use.
 pub async fn from_config(
-    cfg: &crate::config::WebhookConfig,
-) -> crate::error::Result<std::sync::Arc<dyn WebhookProvider>> {
+    cfg: &crate::config::HookConfig,
+) -> crate::error::Result<std::sync::Arc<dyn HookProvider>> {
     match &cfg.target {
-        crate::config::WebhookTarget::Http {
+        crate::config::HookTarget::Http {
             url,
             secret,
             bearer_token,
-        } => Ok(std::sync::Arc::new(crate::webhook::http::HttpWebhook::new(
+        } => Ok(std::sync::Arc::new(crate::hook::http::HttpHook::new(
             cfg.name.clone(),
             cfg.provisioners.clone(),
             url.clone(),
             secret.clone(),
             bearer_token.clone(),
             cfg.timeout.map(crate::duration::ConfigDuration::get),
-        )?) as std::sync::Arc<dyn WebhookProvider>),
-        crate::config::WebhookTarget::Lambda {
+        )?) as std::sync::Arc<dyn HookProvider>),
+        crate::config::HookTarget::Lambda {
             function_name,
             region,
         } => {
-            let client = crate::webhook::lambda::client(region.as_deref()).await;
+            let client = crate::hook::lambda::client(region.as_deref()).await;
             Ok(
-                std::sync::Arc::new(crate::webhook::lambda::LambdaWebhook::new(
+                std::sync::Arc::new(crate::hook::lambda::LambdaHook::new(
                     cfg.name.clone(),
                     cfg.provisioners.clone(),
                     client,
                     function_name.clone(),
-                )) as std::sync::Arc<dyn WebhookProvider>,
+                )) as std::sync::Arc<dyn HookProvider>,
             )
         }
     }
 }
 
-/// The inputs a webhook is consulted with, owned by the caller.
+/// The inputs a hook is consulted with, owned by the caller.
 pub struct Context<'a> {
     /// The operation being performed.
     pub operation: Operation,
     /// Whether the credential already authorizes issuance on its own. When
-    /// `false`, [`run`] denies unless an applicable webhook explicitly allows.
+    /// `false`, [`run`] denies unless an applicable hook explicitly allows.
     pub authorized: bool,
     /// Provisioner name, when issuance was token-authorized.
     pub provisioner: Option<&'a str>,
@@ -209,7 +209,7 @@ pub struct Context<'a> {
     pub previous_certificate_der: Option<&'a [u8]>,
 }
 
-/// The effective certificate properties after applying webhook responses,
+/// The effective certificate properties after applying hook responses,
 /// seeded from the [`Context`] baseline.
 pub struct Customization {
     /// Override subject common name, or `None` to keep the baseline subject.
@@ -228,16 +228,16 @@ pub struct Customization {
     pub additional_extensions: Vec<x509_cert::ext::Extension>,
 }
 
-/// Consult every applicable webhook in order, layering their responses onto a
+/// Consult every applicable hook in order, layering their responses onto a
 /// [`Customization`]. Returns [`crate::error::Error::Forbidden`] as soon as a
-/// webhook denies the request.
+/// hook denies the request.
 ///
 /// When [`ctx.authorized`](Context::authorized) is `false` the call is
-/// *default-deny*: at least one applicable webhook must explicitly grant it
+/// *default-deny*: at least one applicable hook must explicitly grant it
 /// (`allow == Some(true)`), otherwise issuance is forbidden. An authorized
-/// request is *default-allow*: it proceeds unless a webhook denies it.
+/// request is *default-allow*: it proceeds unless a hook denies it.
 pub async fn run(
-    webhooks: &[std::sync::Arc<dyn WebhookProvider>],
+    hooks: &[std::sync::Arc<dyn HookProvider>],
     ctx: &Context<'_>,
 ) -> crate::error::Result<Customization> {
     let mut customization = Customization {
@@ -249,11 +249,11 @@ pub async fn run(
         extended_key_usage: None,
         additional_extensions: Vec::new(),
     };
-    if webhooks.is_empty() {
+    if hooks.is_empty() {
         return unauthorized_guard(ctx.authorized, false).map(|()| customization);
     }
 
-    let request = WebhookRequest {
+    let request = HookRequest {
         timestamp: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()),
         operation: ctx.operation,
         provisioner: ctx.provisioner.map(str::to_string),
@@ -266,15 +266,15 @@ pub async fn run(
     };
 
     let mut explicitly_allowed = false;
-    for webhook in webhooks {
-        if !webhook.applies_to(ctx.provisioner) {
+    for hook in hooks {
+        if !hook.applies_to(ctx.provisioner) {
             continue;
         }
-        let response = webhook.call(&request).await?;
+        let response = hook.call(&request).await?;
         if response.allow == Some(false) {
             let reason = response
                 .deny_reason
-                .unwrap_or_else(|| format!("issuance denied by webhook {:?}", webhook.name()));
+                .unwrap_or_else(|| format!("issuance denied by hook {:?}", hook.name()));
             return Err(crate::error::Error::Forbidden(reason));
         }
         if response.allow == Some(true) {
@@ -285,22 +285,22 @@ pub async fn run(
     unauthorized_guard(ctx.authorized, explicitly_allowed).map(|()| customization)
 }
 
-/// Enforce default-deny for an unauthorized credential: unless a webhook
+/// Enforce default-deny for an unauthorized credential: unless a hook
 /// explicitly allowed it, the request is forbidden.
 fn unauthorized_guard(authorized: bool, explicitly_allowed: bool) -> crate::error::Result<()> {
     if authorized || explicitly_allowed {
         Ok(())
     } else {
         Err(crate::error::Error::Forbidden(
-            "issuance was not authorized by any webhook".into(),
+            "issuance was not authorized by any hook".into(),
         ))
     }
 }
 
-/// Layer one webhook response onto the accumulating customization.
+/// Layer one hook response onto the accumulating customization.
 fn apply_response(
     customization: &mut Customization,
-    response: &WebhookResponse,
+    response: &HookResponse,
 ) -> crate::error::Result<()> {
     if let Some(cn) = &response.subject_common_name {
         customization.subject_common_name = Some(cn.clone());
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn apply_response_replaces_and_adds_sans() {
         let mut c = base_customization();
-        let resp = super::WebhookResponse {
+        let resp = super::HookResponse {
             sans: Some(vec![san("a.example")]),
             additional_sans: vec![san("b.example"), san("a.example")],
             ..Default::default()
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn apply_response_overrides_subject_and_usages() {
         let mut c = base_customization();
-        let resp = super::WebhookResponse {
+        let resp = super::HookResponse {
             subject_common_name: Some("override.example".to_string()),
             key_usage: Some(vec![crate::template::KeyUsageName::DigitalSignature]),
             extended_key_usage: Some(vec![crate::template::ExtKeyUsageName::ClientAuth]),
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn apply_response_parses_raw_extension() {
         let mut c = base_customization();
-        let resp = super::WebhookResponse {
+        let resp = super::HookResponse {
             additional_extensions: vec![super::RawExtension {
                 oid: "2.5.29.99".to_string(),
                 value: vec![0x05, 0x00],
@@ -402,7 +402,7 @@ mod tests {
             "subject_common_name": "cn.example",
             "not_after": "2030-01-01T00:00:00Z"
         }"#;
-        let resp: super::WebhookResponse = serde_json::from_str(json).unwrap();
+        let resp: super::HookResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.allow, Some(true));
         assert_eq!(resp.additional_sans, vec![san("x.example")]);
         assert_eq!(resp.subject_common_name.as_deref(), Some("cn.example"));
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn request_csr_der_round_trips_as_base64() {
-        let req = super::WebhookRequest {
+        let req = super::HookRequest {
             timestamp: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH),
             operation: super::Operation::Sign,
             provisioner: Some("acme".to_string()),
@@ -426,17 +426,17 @@ mod tests {
         assert_eq!(json["operation"], "sign");
         assert_eq!(json["csr_der"], "AQIDBA==");
         assert!(json.get("previous_certificate_der").is_none());
-        let back: super::WebhookRequest = serde_json::from_value(json).unwrap();
+        let back: super::HookRequest = serde_json::from_value(json).unwrap();
         assert_eq!(back.csr_der, Some(vec![1, 2, 3, 4]));
     }
 
-    struct StubWebhook {
+    struct StubHook {
         provisioners: Vec<String>,
-        response: super::WebhookResponse,
+        response: super::HookResponse,
     }
 
     #[async_trait::async_trait]
-    impl super::WebhookProvider for StubWebhook {
+    impl super::HookProvider for StubHook {
         fn name(&self) -> &str {
             "stub"
         }
@@ -448,31 +448,31 @@ mod tests {
         }
         async fn call(
             &self,
-            _request: &super::WebhookRequest,
-        ) -> crate::error::Result<super::WebhookResponse> {
+            _request: &super::HookRequest,
+        ) -> crate::error::Result<super::HookResponse> {
             Ok(self.response.clone())
         }
     }
 
     fn stub(
         provisioners: &[&str],
-        response: super::WebhookResponse,
-    ) -> std::sync::Arc<dyn super::WebhookProvider> {
-        std::sync::Arc::new(StubWebhook {
+        response: super::HookResponse,
+    ) -> std::sync::Arc<dyn super::HookProvider> {
+        std::sync::Arc::new(StubHook {
             provisioners: provisioners.iter().map(|s| s.to_string()).collect(),
             response,
         })
     }
 
-    fn allow() -> super::WebhookResponse {
-        super::WebhookResponse {
+    fn allow() -> super::HookResponse {
+        super::HookResponse {
             allow: Some(true),
             ..Default::default()
         }
     }
 
-    fn deny() -> super::WebhookResponse {
-        super::WebhookResponse {
+    fn deny() -> super::HookResponse {
+        super::HookResponse {
             allow: Some(false),
             ..Default::default()
         }
@@ -499,25 +499,25 @@ mod tests {
     #[tokio::test]
     async fn authorized_is_default_allow() {
         assert!(super::run(&[], &ctx(true)).await.is_ok());
-        let silent = vec![stub(&[], super::WebhookResponse::default())];
+        let silent = vec![stub(&[], super::HookResponse::default())];
         assert!(super::run(&silent, &ctx(true)).await.is_ok());
     }
 
     #[tokio::test]
     async fn authorized_still_honors_denial() {
-        let webhooks = vec![stub(&[], deny())];
-        assert!(is_forbidden(super::run(&webhooks, &ctx(true)).await));
+        let hooks = vec![stub(&[], deny())];
+        assert!(is_forbidden(super::run(&hooks, &ctx(true)).await));
     }
 
     #[tokio::test]
-    async fn unauthorized_with_no_webhook_is_denied() {
+    async fn unauthorized_with_no_hook_is_denied() {
         assert!(is_forbidden(super::run(&[], &ctx(false)).await));
     }
 
     #[tokio::test]
     async fn unauthorized_requires_explicit_allow() {
         // A silent (default) response does not authorize an unauthorized request.
-        let silent = vec![stub(&[], super::WebhookResponse::default())];
+        let silent = vec![stub(&[], super::HookResponse::default())];
         assert!(is_forbidden(super::run(&silent, &ctx(false)).await));
 
         // An explicit allow does.
@@ -526,8 +526,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthorized_denied_when_allowing_webhook_does_not_apply() {
-        // The only webhook that would allow is scoped to a different provisioner.
+    async fn unauthorized_denied_when_allowing_hook_does_not_apply() {
+        // The only hook that would allow is scoped to a different provisioner.
         let scoped = vec![stub(&["other"], allow())];
         assert!(is_forbidden(super::run(&scoped, &ctx(false)).await));
     }

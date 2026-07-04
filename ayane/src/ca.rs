@@ -3,7 +3,7 @@
 //!
 //! This layer is policy-free beyond the template's validity clamping; callers
 //! (the [`crate::service`] orchestration) are responsible for authentication,
-//! SAN authorization, webhooks and events.
+//! SAN authorization, hooks and events.
 
 use der::Encode;
 
@@ -21,18 +21,18 @@ pub struct IssueParams<'a> {
     pub not_after: std::time::SystemTime,
     /// Template governing extensions.
     pub template: &'a crate::template::CertificateTemplate,
-    /// Webhook override for `keyUsage`; falls back to the template when `None`.
+    /// Hook override for `keyUsage`; falls back to the template when `None`.
     pub key_usage_override: Option<Vec<crate::template::KeyUsageName>>,
-    /// Webhook override for `extendedKeyUsage`; falls back to the template.
+    /// Hook override for `extendedKeyUsage`; falls back to the template.
     pub extended_key_usage_override: Option<Vec<crate::template::ExtKeyUsageName>>,
-    /// Extra extensions (e.g. from a webhook), layered on top by OID.
+    /// Extra extensions (e.g. from a hook), layered on top by OID.
     pub additional_extensions: Vec<x509_cert::ext::Extension>,
 }
 
 /// Inputs for one reissuance (renew or rekey).
 ///
 /// Unlike [`IssueParams`], the baseline is the previous certificate's identity
-/// and extensions; the override fields apply a webhook's customization on top of
+/// and extensions; the override fields apply a hook's customization on top of
 /// them (the SAN set is taken as-is from [`sans`](Self::sans), seeded by the
 /// caller from the previous certificate).
 pub struct ReissueParams<'a> {
@@ -40,7 +40,7 @@ pub struct ReissueParams<'a> {
     pub old: &'a x509_cert::Certificate,
     /// The subject public key (same key for renew; new key for rekey).
     pub public_key: spki::SubjectPublicKeyInfoOwned,
-    /// Webhook override for the subject common name; preserves the previous
+    /// Hook override for the subject common name; preserves the previous
     /// subject when `None`.
     pub subject_common_name_override: Option<String>,
     /// Effective SAN set for the reissued certificate.
@@ -49,11 +49,11 @@ pub struct ReissueParams<'a> {
     pub not_before: std::time::SystemTime,
     /// Effective notAfter.
     pub not_after: std::time::SystemTime,
-    /// Webhook override for `keyUsage`; preserves the previous set when `None`.
+    /// Hook override for `keyUsage`; preserves the previous set when `None`.
     pub key_usage_override: Option<Vec<crate::template::KeyUsageName>>,
-    /// Webhook override for `extendedKeyUsage`; preserves the previous set.
+    /// Hook override for `extendedKeyUsage`; preserves the previous set.
     pub extended_key_usage_override: Option<Vec<crate::template::ExtKeyUsageName>>,
-    /// Extra extensions (e.g. from a webhook), layered on top by OID.
+    /// Extra extensions (e.g. from a hook), layered on top by OID.
     pub additional_extensions: Vec<x509_cert::ext::Extension>,
 }
 
@@ -218,7 +218,7 @@ impl CertificateAuthority {
     /// constraints, SANs, and any others) are preserved — so a renewal keeps the
     /// policy it was originally issued under rather than re-deriving it from a
     /// possibly-different current template. The override fields on
-    /// [`ReissueParams`] (populated from a webhook) replace the subject common
+    /// [`ReissueParams`] (populated from a hook) replace the subject common
     /// name, SAN set, key usages or extensions on top of that baseline; the
     /// subject and authority key identifiers are always recomputed.
     pub async fn reissue(

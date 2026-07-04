@@ -11,7 +11,7 @@ ayane is split into a few layers, each with a different trust posture.
 | CA signing key | Mint certificates the whole PKI trusts | Protect with AWS KMS (`{"type":"aws_kms"}` in [`ca.key`](configuration.md)); the key never leaves the HSM-backed service |
 | Provisioner keys | Authorize `sign`/`revoke` requests | A provisioner's *private* key is held by the caller; ayane stores only the *public* JWK |
 | Caller's certificate key | Authorize `renew`/`rekey`/self-`revoke` via DPoP | Proven by signature, never trusted from the request body |
-| Webhook endpoints | Approve or enrich issuance | Outbound; authenticated to ayane via HMAC and/or bearer token |
+| Hook endpoints | Approve or enrich issuance | Outbound; authenticated to ayane via HMAC and/or bearer token |
 | TLS terminator (reverse proxy / Lambda Function URL) | Terminate transport security | ayane never terminates TLS itself; see [deployment](deployment.md) |
 
 TLS is always terminated *in front of* ayane. The server core in `ayane/src/http.rs` speaks plain HTTP and derives request URLs from headers, so the integrity of the audience/`htu` bindings below depends on a correctly configured terminator and on [`server.external_url`](#set-external_url-in-production).
@@ -153,20 +153,20 @@ let key = format!("{kind}#{jti}");   // "ott#<jti>" or "dpop#<jti>"
 Two properties matter:
 
 - **Namespaced.** OTT and DPoP `jti` values live in separate keyspaces (`ott#…` vs `dpop#…`), so they can never collide or be cross-replayed.
-- **Claimed after all checks pass.** In `try_sign`, the `jti` is claimed only *after* signature verification, CSR binding, SAN authorization, template resolution, and webhooks all succeed — right before issuance commits. A transient webhook or template failure therefore never burns a token that is still otherwise valid. For DPoP operations the proof `jti` is claimed only after the signature, freshness, revocation, and expiry checks pass.
+- **Claimed after all checks pass.** In `try_sign`, the `jti` is claimed only *after* signature verification, CSR binding, SAN authorization, template resolution, and hooks all succeed — right before issuance commits. A transient hook or template failure therefore never burns a token that is still otherwise valid. For DPoP operations the proof `jti` is claimed only after the signature, freshness, revocation, and expiry checks pass.
 
 The claim is a conditional write (`attribute_not_exists(pk)` in the [DynamoDB backend](storage.md)); a duplicate `jti` raises `Conflict`, which `claim_jti` maps to `401 Unauthorized` (`"token or proof has already been used"`). The denylist TTL is floored to outlive the validator's acceptance window (`REPLAY_LEEWAY` = 60s on top of `exp` / `iat + max_age`), so a credential can never be re-presented after its record has expired. Enable DynamoDB TTL on the `ttl` attribute so stale records are reaped automatically.
 
-## Webhook trust and integrity
+## Hook trust and integrity
 
-Webhooks (`ayane/src/webhook/mod.rs`, orchestrated by `run` and consumed in `service.rs`) let an external service approve and/or customize issuance from a single typed response — there is no separate authorizing/enriching distinction. They are an *outbound* trust extension and must be authenticated.
+Hooks (`ayane/src/hook/mod.rs`, orchestrated by `run` and consumed in `service.rs`) let an external service approve and/or customize issuance from a single typed response — there is no separate authorizing/enriching distinction. They are an *outbound* trust extension and must be authenticated.
 
 - **HMAC body signing.** When a `secret` (base64 HMAC-SHA256 key) is configured on an HTTP target, ayane sends a hex HMAC-SHA256 over the exact request body bytes in the `X-Ayane-Signature` header. The receiver must verify this to ensure the request genuinely came from ayane.
 - **Bearer token.** An optional `bearer_token` is sent as `Authorization: Bearer …`.
-- **Fail closed.** A non-2xx response is an error, which denies issuance (`403 Forbidden` unless `allow` is not exactly `false`), so a webhook outage cannot silently let requests through.
-- **Validity is re-clamped after the webhook.** A webhook may override `notBefore`/`notAfter`, but the result is re-clamped before issuance: on `sign`, `notAfter` is bounded by the resolved template's `max_validity` (`CertificateTemplate::max_not_after`); on `renew`/`rekey`, `notAfter` may not exceed the previous certificate's lifetime (the baseline window). A webhook can therefore shorten a certificate's lifetime freely, but can never extend issuance beyond the policy ceiling.
+- **Fail closed.** A non-2xx response is an error, which denies issuance (`403 Forbidden` unless `allow` is not exactly `false`), so a hook outage cannot silently let requests through.
+- **Validity is re-clamped after the hook.** A hook may override `notBefore`/`notAfter`, but the result is re-clamped before issuance: on `sign`, `notAfter` is bounded by the resolved template's `max_validity` (`CertificateTemplate::max_not_after`); on `renew`/`rekey`, `notAfter` may not exceed the previous certificate's lifetime (the baseline window). A hook can therefore shorten a certificate's lifetime freely, but can never extend issuance beyond the policy ceiling.
 
-A webhook can otherwise veto any request and customize the subject, SANs, key usages, and arbitrary extensions (including basic constraints), so treat the webhook endpoint as part of your trusted control plane. See [webhooks](webhooks.md) for the full request/response contract.
+A hook can otherwise veto any request and customize the subject, SANs, key usages, and arbitrary extensions (including basic constraints), so treat the hook endpoint as part of your trusted control plane. See [hooks](hooks.md) for the full request/response contract.
 
 ## Set `external_url` in production
 
@@ -220,5 +220,5 @@ Combine KMS protection with the [audit events](events.md) stream (`certificate.i
 
 - [API reference](api.md)
 - [Configuration reference](configuration.md)
-- [Webhooks](webhooks.md)
+- [Hooks](hooks.md)
 - [docs index](README.md)

@@ -456,7 +456,7 @@ Common causes by status:
 - `401` — bad/expired/replayed token signature, missing or invalid DPoP proof,
   unknown provisioner, missing credential on revoke.
 - `403` — authenticated but not permitted: SAN not allowed by the token, `cnf`
-  CSR mismatch, certificate revoked, serial mismatch, webhook deny.
+  CSR mismatch, certificate revoked, serial mismatch, hook deny.
 - `404` — referenced object does not exist.
 - `409` — a uniqueness constraint was violated (token or proof replay).
 - `500` — configuration or unexpected internal failure (detail not exposed).

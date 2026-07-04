@@ -1,5 +1,5 @@
 //! End-to-end tests over the assembled [`Service`](crate::service::Service),
-//! split by endpoint: [`sign`], [`renew`], [`roots`], [`webhooks`], and the
+//! split by endpoint: [`sign`], [`renew`], [`roots`], [`hooks`], and the
 //! cross-endpoint [`lifecycle`].
 //!
 //! These exercise the real request path with an ephemeral CA, a JWK provisioner
@@ -12,7 +12,7 @@ mod lifecycle;
 mod renew;
 mod roots;
 mod sign;
-mod webhooks;
+mod hooks;
 
 use der::{Decode, Encode, EncodePem};
 
@@ -46,18 +46,18 @@ struct Harness {
 }
 
 async fn setup() -> Harness {
-    setup_with_webhooks(Vec::new()).await
+    setup_with_hooks(Vec::new()).await
 }
 
-async fn setup_with_webhooks(
-    webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
+async fn setup_with_hooks(
+    hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>,
 ) -> Harness {
-    setup_with_webhooks_authorized(None, webhooks).await
+    setup_with_hooks_authorized(None, hooks).await
 }
 
-async fn setup_with_webhooks_authorized(
+async fn setup_with_hooks_authorized(
     authorized: Option<bool>,
-    webhooks: Vec<std::sync::Arc<dyn crate::webhook::WebhookProvider>>,
+    hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>,
 ) -> Harness {
     let ca = crate::testca::ec_p256().await;
     let authority = std::sync::Arc::new(
@@ -96,7 +96,7 @@ async fn setup_with_webhooks_authorized(
         authorizer,
         ca: authority,
         storage: storage.clone(),
-        webhooks,
+        hooks,
         events: Vec::new(),
         templates: std::collections::HashMap::new(),
         default_template_name: None,

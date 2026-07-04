@@ -19,9 +19,9 @@ pub struct Config {
     /// Name of the template used when a provisioner does not select one.
     #[serde(default)]
     pub default_template: Option<String>,
-    /// Issuance webhooks (gating and enrichment).
+    /// Issuance hooks (gating and enrichment).
     #[serde(default)]
-    pub webhooks: Vec<WebhookConfig>,
+    pub hooks: Vec<HookConfig>,
     /// Audit event destinations.
     #[serde(default)]
     pub events: Vec<EventConfig>,
@@ -174,7 +174,7 @@ pub enum KeyConfig {
 /// Fields shared by every provisioner type live here; the type-specific
 /// verification configuration is carried by [`kind`](Self::kind), a flattened
 /// enum discriminated by `type` (the same pattern as [`KeyConfig`] and
-/// [`WebhookTarget`]).
+/// [`HookTarget`]).
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProvisionerConfig {
     /// Provisioner name; matched against the token `iss` (or, for `jwks`, the
@@ -188,8 +188,8 @@ pub struct ProvisionerConfig {
     pub template: Option<String>,
     /// Whether a validated token alone authorizes issuance. Defaults by kind
     /// (`jwk` → `true`, `jwks` → `false`); an explicit value overrides. When the
-    /// effective value is `false`, an authorize webhook must explicitly grant
-    /// each request (see [`crate::webhook`]).
+    /// effective value is `false`, an authorize hook must explicitly grant
+    /// each request (see [`crate::hook`]).
     #[serde(default)]
     pub authorized: Option<bool>,
     /// Type-specific verification configuration, discriminated by `type`.
@@ -275,19 +275,19 @@ impl JwksConfig {
     }
 }
 
-/// Fail closed when an unauthorized provisioner has no webhook that could ever
+/// Fail closed when an unauthorized provisioner has no hook that could ever
 /// grant it: such a provisioner can never issue, which is a misconfiguration.
 pub fn validate_provisioner_authorization(cfg: &Config) -> crate::error::Result<()> {
     for provisioner in &cfg.provisioners {
         if provisioner.effective_authorized() {
             continue;
         }
-        let has_webhook = cfg.webhooks.iter().any(|w| {
+        let has_hook = cfg.hooks.iter().any(|w| {
             w.provisioners.is_empty() || w.provisioners.iter().any(|p| p == &provisioner.name)
         });
-        if !has_webhook {
+        if !has_hook {
             return Err(crate::error::Error::Config(format!(
-                "provisioner {:?} is not authorized but no webhook applies to it",
+                "provisioner {:?} is not authorized but no hook applies to it",
                 provisioner.name
             )));
         }
@@ -295,16 +295,16 @@ pub fn validate_provisioner_authorization(cfg: &Config) -> crate::error::Result<
     Ok(())
 }
 
-/// A webhook definition. A single webhook may both authorize (deny) and enrich
+/// A hook definition. A single hook may both authorize (deny) and enrich
 /// an issuance from one response — there is no kind distinction.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WebhookConfig {
-    /// Unique webhook name.
+pub struct HookConfig {
+    /// Unique hook name.
     pub name: String,
-    /// Where the webhook is invoked.
-    pub target: WebhookTarget,
-    /// Provisioner names this webhook applies to; empty means all.
+    /// Where the hook is invoked.
+    pub target: HookTarget,
+    /// Provisioner names this hook applies to; empty means all.
     #[serde(default)]
     pub provisioners: Vec<String>,
     /// Per-call timeout.
@@ -312,10 +312,10 @@ pub struct WebhookConfig {
     pub timeout: Option<crate::duration::ConfigDuration>,
 }
 
-/// Webhook transport.
+/// Hook transport.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum WebhookTarget {
+pub enum HookTarget {
     /// An HTTPS endpoint, optionally HMAC-signed and/or bearer-authenticated.
     Http {
         /// Endpoint URL.
@@ -530,11 +530,11 @@ mod tests {
             config.provisioners[1].kind,
             super::ProvisionerKind::Jwks { .. }
         ));
-        // A jwks provisioner defaults to unauthorized and is gated by a webhook.
+        // A jwks provisioner defaults to unauthorized and is gated by a hook.
         assert!(!config.provisioners[1].effective_authorized());
         super::validate_provisioner_authorization(&config).expect("example is fail-closed clean");
         assert!(config.templates.contains_key("server"));
-        assert_eq!(config.webhooks.len(), 3);
+        assert_eq!(config.hooks.len(), 3);
         assert!(matches!(
             config.storage,
             super::StorageConfig::Dynamodb { .. }
@@ -602,12 +602,12 @@ mod tests {
         "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
         "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" }"#;
 
-    fn config_with(provisioners: &str, webhooks: &str) -> super::Config {
+    fn config_with(provisioners: &str, hooks: &str) -> super::Config {
         let text = format!(
             r#"{{
                 "ca": {{ "certificate": {{ "file": "ca.crt" }}, "key": {{ "type": "file", "file": "ca.key" }} }},
                 "provisioners": {provisioners},
-                "webhooks": {webhooks}
+                "hooks": {hooks}
             }}"#
         );
         super::Config::from_json(&text).expect("config parses")
@@ -633,12 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn unauthorized_provisioner_requires_an_applicable_webhook() {
+    fn unauthorized_provisioner_requires_an_applicable_hook() {
         let provisioners =
             format!(r#"[{{ "name": "p", "type": "jwk", "authorized": false, "key": {EC_JWK} }}]"#);
 
-        let no_webhook = config_with(&provisioners, "[]");
-        assert!(super::validate_provisioner_authorization(&no_webhook).is_err());
+        let no_hook = config_with(&provisioners, "[]");
+        assert!(super::validate_provisioner_authorization(&no_hook).is_err());
 
         let scoped = r#"[{ "name": "gate", "provisioners": ["p"],
             "target": { "type": "http", "url": "https://h.example/hook" } }]"#;
@@ -646,14 +646,14 @@ mod tests {
             super::validate_provisioner_authorization(&config_with(&provisioners, scoped)).is_ok()
         );
 
-        // A webhook that applies to all provisioners (empty list) also qualifies.
+        // A hook that applies to all provisioners (empty list) also qualifies.
         let all = r#"[{ "name": "gate",
             "target": { "type": "http", "url": "https://h.example/hook" } }]"#;
         assert!(
             super::validate_provisioner_authorization(&config_with(&provisioners, all)).is_ok()
         );
 
-        // A webhook scoped to a different provisioner does not.
+        // A hook scoped to a different provisioner does not.
         let other = r#"[{ "name": "gate", "provisioners": ["other"],
             "target": { "type": "http", "url": "https://h.example/hook" } }]"#;
         assert!(
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn authorized_provisioner_needs_no_webhook() {
+    fn authorized_provisioner_needs_no_hook() {
         let provisioners = format!(r#"[{{ "name": "p", "type": "jwk", "key": {EC_JWK} }}]"#);
         let config = config_with(&provisioners, "[]");
         assert!(super::validate_provisioner_authorization(&config).is_ok());

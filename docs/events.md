@@ -1,6 +1,6 @@
 # Audit events
 
-Ayane emits a structured audit record for every authorization decision and certificate operation, fanning it out to the configured destinations. Auditing is independent of [webhooks](webhooks.md): webhooks participate in the issuance decision, whereas audit events are a one-way record of what happened (and why) that is written after the decision is made.
+Ayane emits a structured audit record for every authorization decision and certificate operation, fanning it out to the configured destinations. Auditing is independent of [hooks](hooks.md): hooks participate in the issuance decision, whereas audit events are a one-way record of what happened (and why) that is written after the decision is made.
 
 ## The audit model
 
@@ -60,7 +60,7 @@ The `outcome` field has three possible values:
 | `outcome` | Meaning |
 | --- | --- |
 | `success` | The operation completed and a certificate was issued, reissued, or revoked. |
-| `denied` | The request was rejected by an authorization check (bad token, failed DPoP proof, a [webhook](webhooks.md) that returned `allow: false`, a replayed `jti`, etc.). |
+| `denied` | The request was rejected by an authorization check (bad token, failed DPoP proof, a [hook](hooks.md) that returned `allow: false`, a replayed `jti`, etc.). |
 | `error` | The operation failed due to a server-side or configuration fault. |
 
 The split between `denied` and `error` is mechanical: a `Config` or `Internal` error maps to `error`, and every other error type (`BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`, `Conflict`) maps to `denied`. For both, the `detail` field carries the error message string. See [errors](api.md) for how those same error types map to HTTP status codes.
@@ -212,6 +212,6 @@ Or to capture only denied authorizations across all certificate operations:
 ## See also
 
 - [configuration](configuration.md) — the full server configuration schema, including the `events` array.
-- [webhooks](webhooks.md) — callbacks that gate and/or customize the decision an audit event records.
+- [hooks](hooks.md) — callbacks that gate and/or customize the decision an audit event records.
 - [errors](api.md) — the error types that determine the `denied` vs `error` outcome.
 - [docs index](README.md)

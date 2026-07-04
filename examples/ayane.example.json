@@ -54,7 +54,7 @@
     }
   },
 
-  "webhooks": [
+  "hooks": [
     {
       "name": "policy-gate",
       "provisioners": ["ci-issuer"],

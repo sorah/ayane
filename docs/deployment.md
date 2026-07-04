@@ -2,7 +2,7 @@
 
 ayane ships as a single binary, `ayane-server`, that can run either as a standalone HTTP server (behind your own TLS-terminating reverse proxy) or as an AWS Lambda function fronted by a Lambda Function URL. The same binary picks its mode automatically at runtime, so the only thing that changes between the two deployments is the surrounding infrastructure and a handful of configuration fields.
 
-This page covers both run modes, the AWS-native backends (KMS signing keys, DynamoDB state, EventBridge audit, Lambda webhooks), and a minimal IAM policy. For the full configuration schema see [configuration](configuration.md); for the state table and revocation/replay semantics see [storage](storage.md).
+This page covers both run modes, the AWS-native backends (KMS signing keys, DynamoDB state, EventBridge audit, Lambda hooks), and a minimal IAM policy. For the full configuration schema see [configuration](configuration.md); for the state table and revocation/replay semantics see [storage](storage.md).
 
 ## The `ayane-server` binary
 
@@ -153,11 +153,11 @@ Packaging notes:
 - Build the binary for the Lambda runtime (a static or `provided.al2023`-compatible build) and deploy it as a custom-runtime function whose handler is `ayane-server`.
 - Pass the configuration inline via `AYANE_CONFIG_BASE64URL` (base64url, no padding, of the JSON document) so the function needs no sidecar file, bundle a config alongside the binary and point `AYANE_CONFIG` at its in-package path, or — for a large or secret-bearing config — keep it in DynamoDB and pass only the [storage bootstrap](#configuration-in-storage) (`AYANE_BOOTSTRAP_STORAGE_CONFIG` + `AYANE_CONFIG_SHA384`).
 - Lambda functions are stateless and may run many concurrent instances, so use a durable, shared backend (DynamoDB) for state. The default in-memory storage does not share revocations or one-time-token claims across instances and must not be used in Lambda. See [storage](storage.md).
-- The function's execution role supplies AWS credentials for KMS, DynamoDB, EventBridge, and Lambda webhook calls.
+- The function's execution role supplies AWS credentials for KMS, DynamoDB, EventBridge, and Lambda hook calls.
 
 ## AWS-native backends
 
-AWS clients are constructed lazily: the default credential chain is only touched when some provider actually needs AWS. A deployment using only file keys, memory/file storage, and stdout/file events never loads AWS configuration. AWS is loaded when any of the following is configured: a KMS signing key, DynamoDB storage, an EventBridge event sink, or a Lambda webhook target.
+AWS clients are constructed lazily: the default credential chain is only touched when some provider actually needs AWS. A deployment using only file keys, memory/file storage, and stdout/file events never loads AWS configuration. AWS is loaded when any of the following is configured: a KMS signing key, DynamoDB storage, an EventBridge event sink, or a Lambda hook target.
 
 Each AWS-backed provider accepts an optional `region` field that overrides the region from the default chain for that client only.
 
@@ -293,13 +293,13 @@ Add an EventBridge sink to `events` to publish audit events via `PutEvents`. Emi
 
 Each entry sets `source`, `detail_type` to the event type (e.g. `certificate.issued`), and `detail` to the event JSON. See [events](events.md) for the event schema and other destinations.
 
-### Lambda webhooks
+### Lambda hooks
 
-A webhook `target` of type `lambda` invokes an AWS Lambda function synchronously to gate and/or customize issuance.
+A hook `target` of type `lambda` invokes an AWS Lambda function synchronously to gate and/or customize issuance.
 
 ```json
 {
-  "webhooks": [
+  "hooks": [
     {
       "name": "enrich-from-lambda",
       "target": {
@@ -318,7 +318,7 @@ A webhook `target` of type `lambda` invokes an AWS Lambda function synchronously
 | `function_name` | yes | Function name or ARN. |
 | `region` | no | Region override for the Lambda client. |
 
-See [webhooks](webhooks.md) for the request/response payloads and the gate/customize semantics.
+See [hooks](hooks.md) for the request/response payloads and the gate/customize semantics.
 
 ## Minimal IAM policy
 
@@ -357,7 +357,7 @@ Grant only the actions the configured backends require. The policy below covers 
       "Resource": "arn:aws:events:us-east-1:111122223333:event-bus/default"
     },
     {
-      "Sid": "Webhook",
+      "Sid": "Hook",
       "Effect": "Allow",
       "Action": "lambda:InvokeFunction",
       "Resource": "arn:aws:lambda:us-east-1:111122223333:function:ayane-enrich"
@@ -370,12 +370,12 @@ Notes:
 
 - KMS: ayane calls `kms:Sign` on every issuance and `kms:GetPublicKey` once at startup. No `kms:Encrypt`/`Decrypt` is needed.
 - DynamoDB: `PutItem` and `GetItem` on the table, plus `Query` on the table and its `inverted` index (used to list issued certificates and revocations). No `Scan`, `UpdateItem`, or `DeleteItem` (claim expiry is handled by DynamoDB TTL).
-- EventBridge and Lambda statements are needed only when an `event_bridge` event sink or a `lambda` webhook is configured.
+- EventBridge and Lambda statements are needed only when an `event_bridge` event sink or a `lambda` hook is configured.
 - Attach this policy to the standalone host's instance role or the Lambda execution role. Credentials are resolved through the standard AWS default chain.
 
 ## Full reference deployment
 
-A complete example wiring KMS signing, DynamoDB storage, EventBridge audit, and HTTP/Lambda webhooks together lives at `examples/ayane.example.json` in the repository. Use it as a starting point and adjust the key id, table name, region, and provisioner keys.
+A complete example wiring KMS signing, DynamoDB storage, EventBridge audit, and HTTP/Lambda hooks together lives at `examples/ayane.example.json` in the repository. Use it as a starting point and adjust the key id, table name, region, and provisioner keys.
 
 ## See also
 

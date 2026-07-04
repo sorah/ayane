@@ -57,16 +57,16 @@ pub async fn build_service(
         events.push(crate::event_sink::from_config(event).await?);
     }
 
-    let mut webhooks = Vec::new();
-    for webhook in &config.webhooks {
-        webhooks.push(crate::webhook::from_config(webhook).await?);
+    let mut hooks = Vec::new();
+    for hook in &config.hooks {
+        hooks.push(crate::hook::from_config(hook).await?);
     }
 
     Ok(crate::service::Service::new(crate::service::ServiceParts {
         authorizer,
         ca,
         storage,
-        webhooks,
+        hooks,
         events,
         templates: config.templates.clone(),
         default_template_name: config.default_template.clone(),

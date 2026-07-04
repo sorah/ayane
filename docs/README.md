@@ -7,7 +7,7 @@ ayane is an AWS-native, [step-ca](https://smallstep.com/docs/step-ca/)-style X.5
 - **JWT one-time tokens** — issuance is gated by an OTT signed by a configured provisioner; the JWT algorithm is pinned to the provisioner's key type (alg-confusion-safe), and each `jti` is single-use.
 - **DPoP self-service lifecycle** — renew, rekey, and self-revoke require an RFC 9449 proof verified directly against the presented certificate's public key, so no second secret is needed.
 - **Pluggable AWS-native backends** — CA key in a file or AWS KMS, audit events to stdout / file / Amazon EventBridge, revocation and anti-replay state in SQLite (file or in-memory) or Amazon DynamoDB.
-- **Webhooks** — HTTP or AWS Lambda webhooks gate and customize issuance from a single typed response.
+- **Hooks** — HTTP or AWS Lambda hooks gate and customize issuance from a single typed response.
 - **Certificate templates** — declarative key usage, extended key usage, CA/path-length, and validity policy.
 - **Dual deployment** — one `axum` router served standalone over tokio, or via `lambda_http` behind a Function URL, with TLS terminated externally.
 - **RFC 7807 errors** — every failure is an `application/problem+json` body.
@@ -20,7 +20,7 @@ ayane exposes a small JSON API under the `/v1` prefix. There are two authenticat
 
 1. A provisioner (an entity holding a private key whose public JWK is configured on the server) mints an **OTT**: a JWT whose `iss` is the provisioner name, `sub` is the subject/CN, `sans` lists the permitted Subject Alternative Names, and `aud` is the request endpoint URL. The token may carry a `cnf` claim binding it to the SHA-256 thumbprint of a specific CSR.
 2. The client generates a key pair and a CSR, then POSTs `{csr, token}` (optionally `not_before` / `not_after`) to `/v1/sign`.
-3. The server validates the token signature against the provisioner JWK (with the alg pinned to the key type), checks `aud`/`nbf`/`exp` (60s leeway), confirms the requested SANs are permitted, claims the `jti` once for anti-replay, runs any webhooks, applies the template, and signs the leaf.
+3. The server validates the token signature against the provisioner JWK (with the alg pinned to the key type), checks `aud`/`nbf`/`exp` (60s leeway), confirms the requested SANs are permitted, claims the `jti` once for anti-replay, runs any hooks, applies the template, and signs the leaf.
 4. The response is `201` with `{certificate, chain, serial_number, not_after}`.
 
 ### Lifecycle (`POST /v1/renew`, `/v1/rekey`, `/v1/revoke`)
@@ -78,7 +78,7 @@ The server core lives in the `ayane` crate, organized as a set of pluggable abst
 | --- | --- | --- |
 | Key provider | `key_provider` | file key, AWS KMS |
 | Authorizer | `authorizer` | JWT one-time token (OTT) |
-| Webhook | `webhook` | HTTP, AWS Lambda |
+| Hook | `hook` | HTTP, AWS Lambda |
 | Event destination | `event` | stdout, file, AWS EventBridge |
 | Storage | `storage` | SQLite, DynamoDB |
 
@@ -104,7 +104,7 @@ ayane is a Cargo workspace of three crates:
 | [Provisioners and tokens](provisioners.md) | Configuring JWK provisioners and the OTT claim set (`iss`, `aud`, `sub`, `sans`, `cnf`, ...). |
 | [DPoP and the certificate lifecycle](renewal-revocation.md) | Renew, rekey, and self-revoke with RFC 9449 proof of possession. |
 | [Certificate templates](templates.md) | Key usage, extended key usage, CA constraints, and validity policy. |
-| [Webhooks](webhooks.md) | HTTP or AWS Lambda webhooks that gate and customize issuance. |
+| [Hooks](hooks.md) | HTTP or AWS Lambda hooks that gate and customize issuance. |
 | [Audit events](events.md) | Emitting issuance/revocation events to stdout, a file, or Amazon EventBridge. |
 | [Storage](storage.md) | SQLite and DynamoDB backends for revocation records and anti-replay state. |
 | [Deployment](deployment.md) | Running `ayane-server` standalone or as an AWS Lambda Function URL, and `external_url`. |
