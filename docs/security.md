@@ -159,10 +159,11 @@ The claim is a conditional write (`attribute_not_exists(pk)` in the [DynamoDB ba
 
 ## Hook trust and integrity
 
-Hooks (`ayane/src/hook/mod.rs`, orchestrated by `run` and consumed in `service.rs`) let an external service approve and/or customize issuance from a single typed response — there is no separate authorizing/enriching distinction. They are an *outbound* trust extension and must be authenticated.
+Hooks (`ayane/src/hook/mod.rs`, orchestrated by `run` and consumed in `service.rs`) let an external service approve and/or customize issuance from a single typed response — there is no separate authorizing/enriching distinction. For the network transports (`http`, `lambda`) they are an *outbound* trust extension and must be authenticated.
 
 - **HMAC body signing.** When a `secret` (base64 HMAC-SHA256 key) is configured on an HTTP target, ayane sends a hex HMAC-SHA256 over the exact request body bytes in the `X-Ayane-Signature` header. The receiver must verify this to ensure the request genuinely came from ayane.
 - **Bearer token.** An optional `bearer_token` is sent as `Authorization: Bearer …`.
+- **Exec runs locally.** An `exec` target executes a configured command as a subprocess of ayane, inheriting its user, environment, and working directory — so it is a local *code-execution* extension, not an authenticated network call. Authenticity comes from the config itself (whoever controls the config chooses the binary); there is no HMAC/bearer step. The command is run directly, never via a shell, so the argument vector is not subject to shell injection. Treat the configured binary and its path as part of the trusted control plane.
 - **Fail closed.** A non-2xx response is an error, which denies issuance (`403 Forbidden` unless `allow` is not exactly `false`), so a hook outage cannot silently let requests through.
 - **Validity is re-clamped after the hook.** A hook may override `notBefore`/`notAfter`, but the result is re-clamped before issuance: on `sign`, `notAfter` is bounded by the resolved template's `max_validity` (`CertificateTemplate::max_not_after`); on `renew`/`rekey`, `notAfter` may not exceed the previous certificate's lifetime (the baseline window). A hook can therefore shorten a certificate's lifetime freely, but can never extend issuance beyond the policy ceiling.
 

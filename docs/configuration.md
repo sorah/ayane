@@ -332,7 +332,7 @@ The hook reply is a single typed response: `allow: false` denies issuance (`403`
 
 ### HookTarget
 
-An internally tagged enum keyed on `type`: `"http"` or `"lambda"`.
+An internally tagged enum keyed on `type`: `"http"`, `"lambda"`, or `"exec"`.
 
 #### `type: "http"`
 
@@ -350,6 +350,15 @@ An internally tagged enum keyed on `type`: `"http"` or `"lambda"`.
 | `type` | string | required | Literal `"lambda"`. |
 | `function_name` | string | required | Lambda function name or ARN, invoked synchronously. |
 | `region` | string | optional | Region override for the Lambda client. |
+
+#### `type: "exec"`
+
+| Field | Type | Required / default | Description |
+| --- | --- | --- | --- |
+| `type` | string | required | Literal `"exec"`. |
+| `command` | array of string | required | Program followed by its arguments, run directly (no shell). The request JSON is written to stdin and the reply read from stdout; stderr is inherited. Must be non-empty. |
+
+The `timeout` on the enclosing entry, when set, bounds the run and kills the process on expiry.
 
 ```json
 [

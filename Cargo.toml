@@ -30,7 +30,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Async runtime / HTTP
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util", "process"] }
 async-trait = "0.1"
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }

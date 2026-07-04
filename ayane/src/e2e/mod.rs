@@ -7,12 +7,12 @@
 //! harness and request builders live here; each submodule holds the tests for
 //! one endpoint.
 
+mod hooks;
 mod jwks;
 mod lifecycle;
 mod renew;
 mod roots;
 mod sign;
-mod hooks;
 
 use der::{Decode, Encode, EncodePem};
 
@@ -49,9 +49,7 @@ async fn setup() -> Harness {
     setup_with_hooks(Vec::new()).await
 }
 
-async fn setup_with_hooks(
-    hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>,
-) -> Harness {
+async fn setup_with_hooks(hooks: Vec<std::sync::Arc<dyn crate::hook::HookProvider>>) -> Harness {
     setup_with_hooks_authorized(None, hooks).await
 }
 

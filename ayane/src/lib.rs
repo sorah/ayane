@@ -24,6 +24,7 @@ pub mod dpop;
 pub mod duration;
 pub mod error;
 pub mod event_sink;
+pub mod hook;
 pub mod http;
 pub mod key_provider;
 pub mod san;
@@ -32,7 +33,6 @@ pub mod service;
 pub mod storage;
 pub mod template;
 pub mod tls;
-pub mod hook;
 pub mod x509;
 
 #[cfg(test)]

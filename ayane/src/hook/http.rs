@@ -30,9 +30,7 @@ impl HttpHook {
             Some(s) => Some(
                 base64::engine::general_purpose::STANDARD
                     .decode(s.as_bytes())
-                    .map_err(|e| {
-                        crate::error::Error::Config(format!("hook secret base64: {e}"))
-                    })?,
+                    .map_err(|e| crate::error::Error::Config(format!("hook secret base64: {e}")))?,
             ),
             None => None,
         };

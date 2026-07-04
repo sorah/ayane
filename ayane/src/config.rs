@@ -335,6 +335,13 @@ pub enum HookTarget {
         #[serde(default)]
         region: Option<String>,
     },
+    /// A local command run as a subprocess. The request JSON is written to the
+    /// command's stdin and its stdout is parsed as the reply.
+    Exec {
+        /// Program to run followed by its arguments; executed directly (no
+        /// shell). Must be non-empty.
+        command: Vec<String>,
+    },
 }
 
 /// An audit event destination.
@@ -569,6 +576,21 @@ mod tests {
         assert!(matches!(
             config.storage,
             super::StorageConfig::Sqlite { path } if path == ":memory:"
+        ));
+    }
+
+    #[test]
+    fn parses_exec_hook_target() {
+        let text = r#"{
+            "ca": { "certificate": { "file": "ca.crt" }, "key": { "type": "file", "file": "ca.key" } },
+            "hooks": [{ "name": "local-gate",
+                "target": { "type": "exec", "command": ["/usr/local/bin/ayane-hook", "--gate"] } }]
+        }"#;
+        let config = super::Config::from_json(text).expect("exec hook parses");
+        assert!(matches!(
+            &config.hooks[0].target,
+            super::HookTarget::Exec { command }
+                if command == &["/usr/local/bin/ayane-hook", "--gate"]
         ));
     }
 

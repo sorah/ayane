@@ -1,6 +1,6 @@
 # Issuance hooks
 
-Issuance hooks let an external service gate and/or customize certificate issuance. Before ayane signs (or reissues) a certificate it can call out to one or more hooks, each of which replies with a single typed response that may **deny** the request and/or **customize** the certificate (subject, SANs, validity, key usages, or arbitrary extensions). There is no separate "authorizing" vs "enriching" kind — one response does both. Hooks are configured under the top-level `hooks` key and are invoked over HTTPS (optionally HMAC-signed) or a synchronous AWS Lambda invocation.
+Issuance hooks let an external service gate and/or customize certificate issuance. Before ayane signs (or reissues) a certificate it can call out to one or more hooks, each of which replies with a single typed response that may **deny** the request and/or **customize** the certificate (subject, SANs, validity, key usages, or arbitrary extensions). There is no separate "authorizing" vs "enriching" kind — one response does both. Hooks are configured under the top-level `hooks` key and are invoked over HTTPS (optionally HMAC-signed), a synchronous AWS Lambda invocation, or a local command fed the request on stdin.
 
 Hooks run for the `sign`, `renew`, and `rekey` operations. The `operation` field in the request body tells the hook which one is in progress. For `renew`/`rekey` the request is not tied to a provisioner, so only hooks that apply to all provisioners (an empty `provisioners` filter) are consulted.
 
@@ -13,7 +13,7 @@ Hooks are listed under `hooks` in the [configuration](configuration.md) file. Ea
 | `name` | string | yes | — | Unique hook name; appears in denial errors and logs |
 | `target` | object | yes | — | Transport, tagged by `type` (see below) |
 | `provisioners` | array of string | no | `[]` (all) | Provisioner names this hook applies to; empty means every provisioner |
-| `timeout` | duration string | no | none | Per-call timeout (e.g. `"5s"`). HTTP only; bounds each request |
+| `timeout` | duration string | no | none | Per-call timeout (e.g. `"5s"`). Bounds each HTTP request and each `exec` command run (a timed-out command is killed); ignored for `lambda` |
 
 The configuration struct rejects unknown fields (`deny_unknown_fields`), so a typo in a key fails startup rather than being silently ignored.
 
@@ -59,6 +59,22 @@ The configuration struct rejects unknown fields (`deny_unknown_fields`), so a ty
 | `region` | string | no | Region override; defaults to the ambient AWS configuration |
 
 The request JSON is the Lambda invocation payload, and the function's returned payload is decoded as the reply. A non-2xx Lambda status code, a `FunctionError` in the response, or an empty payload is treated as a failure.
+
+### `target` — Exec
+
+```json
+{
+  "type": "exec",
+  "command": ["/usr/local/bin/ayane-hook", "--mode", "gate"]
+}
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `"exec"` | yes | Selects the local-command transport |
+| `command` | array of string | yes | Program to run followed by its arguments; must be non-empty. An empty array is a startup configuration error |
+
+The command is executed **directly, not through a shell** — the first element is the program and the rest are passed as its arguments verbatim, so there is no quoting, globbing, or variable expansion (wrap it in `["sh", "-c", "…"]` yourself if you need a shell). ayane writes the request JSON to the command's **stdin** and closes it, then reads the reply JSON from its **stdout**. The command's **stderr is inherited** by the ayane process, so anything it logs there lands in ayane's own logs. A non-zero exit status, a failure to spawn the program, or (when `timeout` is set) exceeding the timeout — in which case the process is killed — is treated as a failure and aborts issuance. The command runs with the ayane server's environment, user, and working directory.
 
 ### Example
 
@@ -188,7 +204,7 @@ Example reply that adds a SAN and shortens the lifetime:
 Hooks run before the one-time issuance token (or DPoP proof) is consumed and before the certificate is signed, so a hook failure aborts issuance cleanly without burning the credential. Failures fail closed:
 
 - **Denial**: a reply with `allow: false` denies the request (`403 Forbidden`).
-- **Transport failure**: a non-2xx HTTP status, a request/connection error, a timeout, a Lambda `FunctionError` or non-2xx status code, an empty Lambda payload, or a response that cannot be decoded all propagate as an error and abort issuance. For these internal/transport failures the surface error is `500`-class; only an explicit `allow: false` yields `403`.
+- **Transport failure**: a non-2xx HTTP status, a request/connection error, a timeout, a Lambda `FunctionError` or non-2xx status code, an empty Lambda payload, an `exec` command that fails to spawn or exits non-zero, or a response that cannot be decoded all propagate as an error and abort issuance. For these internal/transport failures the surface error is `500`-class; only an explicit `allow: false` yields `403`.
 
 Because responses are applied in order and any hook may deny, the first failure short-circuits the chain. No partial certificate is ever issued.
 

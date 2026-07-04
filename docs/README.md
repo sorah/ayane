@@ -7,7 +7,7 @@ ayane is an AWS-native, [step-ca](https://smallstep.com/docs/step-ca/)-style X.5
 - **JWT one-time tokens** — issuance is gated by an OTT signed by a configured provisioner; the JWT algorithm is pinned to the provisioner's key type (alg-confusion-safe), and each `jti` is single-use.
 - **DPoP self-service lifecycle** — renew, rekey, and self-revoke require an RFC 9449 proof verified directly against the presented certificate's public key, so no second secret is needed.
 - **Pluggable AWS-native backends** — CA key in a file or AWS KMS, audit events to stdout / file / Amazon EventBridge, revocation and anti-replay state in SQLite (file or in-memory) or Amazon DynamoDB.
-- **Hooks** — HTTP or AWS Lambda hooks gate and customize issuance from a single typed response.
+- **Hooks** — HTTP, AWS Lambda, or local-command hooks gate and customize issuance from a single typed response.
 - **Certificate templates** — declarative key usage, extended key usage, CA/path-length, and validity policy.
 - **Dual deployment** — one `axum` router served standalone over tokio, or via `lambda_http` behind a Function URL, with TLS terminated externally.
 - **RFC 7807 errors** — every failure is an `application/problem+json` body.
@@ -78,7 +78,7 @@ The server core lives in the `ayane` crate, organized as a set of pluggable abst
 | --- | --- | --- |
 | Key provider | `key_provider` | file key, AWS KMS |
 | Authorizer | `authorizer` | JWT one-time token (OTT) |
-| Hook | `hook` | HTTP, AWS Lambda |
+| Hook | `hook` | HTTP, AWS Lambda, local exec |
 | Event destination | `event` | stdout, file, AWS EventBridge |
 | Storage | `storage` | SQLite, DynamoDB |
 
@@ -104,7 +104,7 @@ ayane is a Cargo workspace of three crates:
 | [Provisioners and tokens](provisioners.md) | Configuring JWK provisioners and the OTT claim set (`iss`, `aud`, `sub`, `sans`, `cnf`, ...). |
 | [DPoP and the certificate lifecycle](renewal-revocation.md) | Renew, rekey, and self-revoke with RFC 9449 proof of possession. |
 | [Certificate templates](templates.md) | Key usage, extended key usage, CA constraints, and validity policy. |
-| [Hooks](hooks.md) | HTTP or AWS Lambda hooks that gate and customize issuance. |
+| [Hooks](hooks.md) | HTTP, AWS Lambda, or local-command hooks that gate and customize issuance. |
 | [Audit events](events.md) | Emitting issuance/revocation events to stdout, a file, or Amazon EventBridge. |
 | [Storage](storage.md) | SQLite and DynamoDB backends for revocation records and anti-replay state. |
 | [Deployment](deployment.md) | Running `ayane-server` standalone or as an AWS Lambda Function URL, and `external_url`. |

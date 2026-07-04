@@ -5,14 +5,16 @@
 //! replies with one typed [`HookResponse`]: it may deny the request
 //! (`allow = false`) and/or customize the certificate (subject, SANs, validity,
 //! key usages, or arbitrary extensions) from the same response — there is no
-//! authorizing/enriching distinction. Transport is either HTTPS (optionally
-//! HMAC-signed) or a synchronous AWS Lambda invocation.
+//! authorizing/enriching distinction. Transport is one of: HTTPS (optionally
+//! HMAC-signed), a synchronous AWS Lambda invocation, or a local command fed
+//! the request on stdin.
 //!
 //! Each applicable hook is invoked with the *original* request (it does not
 //! observe an earlier hook's customization); their responses are layered onto
 //! a [`Customization`] in configuration order, which the caller then turns into
 //! the issued certificate.
 
+pub mod exec;
 pub mod http;
 pub mod lambda;
 
@@ -95,17 +97,13 @@ impl RawExtension {
             .oid
             .parse::<const_oid::ObjectIdentifier>()
             .map_err(|e| {
-                crate::error::Error::BadRequest(format!(
-                    "hook extension OID {:?}: {e}",
-                    self.oid
-                ))
+                crate::error::Error::BadRequest(format!("hook extension OID {:?}: {e}", self.oid))
             })?;
         Ok(x509_cert::ext::Extension {
             extn_id,
             critical: self.critical,
-            extn_value: der::asn1::OctetString::new(self.value.clone()).map_err(|e| {
-                crate::error::Error::Internal(format!("hook extension value: {e}"))
-            })?,
+            extn_value: der::asn1::OctetString::new(self.value.clone())
+                .map_err(|e| crate::error::Error::Internal(format!("hook extension value: {e}")))?,
         })
     }
 }
@@ -174,14 +172,20 @@ pub async fn from_config(
             region,
         } => {
             let client = crate::hook::lambda::client(region.as_deref()).await;
-            Ok(
-                std::sync::Arc::new(crate::hook::lambda::LambdaHook::new(
-                    cfg.name.clone(),
-                    cfg.provisioners.clone(),
-                    client,
-                    function_name.clone(),
-                )) as std::sync::Arc<dyn HookProvider>,
-            )
+            Ok(std::sync::Arc::new(crate::hook::lambda::LambdaHook::new(
+                cfg.name.clone(),
+                cfg.provisioners.clone(),
+                client,
+                function_name.clone(),
+            )) as std::sync::Arc<dyn HookProvider>)
+        }
+        crate::config::HookTarget::Exec { command } => {
+            Ok(std::sync::Arc::new(crate::hook::exec::ExecHook::new(
+                cfg.name.clone(),
+                cfg.provisioners.clone(),
+                command.clone(),
+                cfg.timeout.map(crate::duration::ConfigDuration::get),
+            )?) as std::sync::Arc<dyn HookProvider>)
         }
     }
 }

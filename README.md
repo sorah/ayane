@@ -9,7 +9,7 @@ It supports multiple cloud environments, such as on AWS (KMS, Lambda, Function U
 - **JWT one-time tokens** — issuance is gated by an OTT signed by a configured provisioner. The JWT algorithm is pinned to the provisioner's key type (alg-confusion-safe), and each `jti` is single-use.
 - **DPoP self-service lifecycle** — renew, rekey, and self-revoke are authenticated by an RFC 9449 proof verified directly against the presented certificate's public key.
 - **Pluggable, AWS-native backends** — CA key in a file or AWS KMS; audit events to stdout, a file, or Amazon EventBridge; revocation and anti-replay state in SQLite or Amazon DynamoDB.
-- **Issuance hooks** — gate and/or customize certificates from an external HTTP or AWS Lambda service via a single typed response.
+- **Issuance hooks** — gate and/or customize certificates from an external HTTP service, AWS Lambda function, or local command via a single typed response.
 - **Certificate templates** — declarative key usage, extended key usage, CA/path-length constraints, and validity policy.
 
 ## Quick start
