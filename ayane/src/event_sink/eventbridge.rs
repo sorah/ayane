@@ -17,15 +17,18 @@ pub(crate) async fn client(region: Option<&str>) -> aws_sdk_eventbridge::Client 
 /// JSON-serialized [`AuditEvent`](crate::event_sink::AuditEvent).
 pub struct EventBridgeSink {
     client: aws_sdk_eventbridge::Client,
-    event_bus_name: String,
+    event_bus_name: Option<String>,
     source: String,
 }
 
 impl EventBridgeSink {
     /// Build a sink that publishes to `event_bus_name` with the given `source`.
+    ///
+    /// A `None` `event_bus_name` leaves the target unset, routing events to the
+    /// account's default event bus.
     pub fn new(
         client: aws_sdk_eventbridge::Client,
-        event_bus_name: String,
+        event_bus_name: Option<String>,
         source: String,
     ) -> EventBridgeSink {
         EventBridgeSink {
@@ -40,12 +43,14 @@ impl EventBridgeSink {
 impl crate::event_sink::EventSink for EventBridgeSink {
     async fn emit(&self, event: &crate::event_sink::AuditEvent) -> crate::error::Result<()> {
         let detail = serde_json::to_string(event)?;
-        let entry = aws_sdk_eventbridge::types::PutEventsRequestEntry::builder()
+        let mut entry = aws_sdk_eventbridge::types::PutEventsRequestEntry::builder()
             .source(&self.source)
             .detail_type(&event.event_type)
-            .detail(detail)
-            .event_bus_name(&self.event_bus_name)
-            .build();
+            .detail(detail);
+        if let Some(event_bus_name) = &self.event_bus_name {
+            entry = entry.event_bus_name(event_bus_name);
+        }
+        let entry = entry.build();
         let resp = self
             .client
             .put_events()
@@ -83,8 +88,32 @@ mod tests {
             [&put]
         );
 
-        let sink =
-            super::EventBridgeSink::new(client, "audit-bus".to_string(), "ayane.ca".to_string());
+        let sink = super::EventBridgeSink::new(
+            client,
+            Some("audit-bus".to_string()),
+            "ayane.ca".to_string(),
+        );
+        let event = crate::event_sink::AuditEvent::now("certificate.issued", "success");
+        sink.emit(&event).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn emits_to_default_bus_when_omitted() {
+        use crate::event_sink::EventSink;
+
+        let put =
+            aws_smithy_mocks::mock!(aws_sdk_eventbridge::Client::put_events).then_output(|| {
+                aws_sdk_eventbridge::operation::put_events::PutEventsOutput::builder()
+                    .failed_entry_count(0)
+                    .build()
+            });
+        let client = aws_smithy_mocks::mock_client!(
+            aws_sdk_eventbridge,
+            aws_smithy_mocks::RuleMode::MatchAny,
+            [&put]
+        );
+
+        let sink = super::EventBridgeSink::new(client, None, "ayane.ca".to_string());
         let event = crate::event_sink::AuditEvent::now("certificate.issued", "success");
         sink.emit(&event).await.unwrap();
     }
@@ -105,8 +134,11 @@ mod tests {
             [&put]
         );
 
-        let sink =
-            super::EventBridgeSink::new(client, "audit-bus".to_string(), "ayane.ca".to_string());
+        let sink = super::EventBridgeSink::new(
+            client,
+            Some("audit-bus".to_string()),
+            "ayane.ca".to_string(),
+        );
         let event = crate::event_sink::AuditEvent::now("certificate.issued", "success");
         let err = sink.emit(&event).await.unwrap_err();
         assert!(matches!(err, crate::error::Error::Internal(_)));
